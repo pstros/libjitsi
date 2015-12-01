@@ -58,7 +58,7 @@ public class CachingTransformer
      * Packets added to the cache more than <tt>SIZE_MILLIS</tt> ago might be
      * cleared from the cache.
      */
-    private static int SIZE_MILLIS = 500;
+    private static int SIZE_MILLIS = 7000;
 
     /**
      * Assumed rate of the RTP clock.
@@ -79,7 +79,7 @@ public class CachingTransformer
     /**
      * The maximum number of packets cached for each SSRC.
      */
-    private static int MAX_SIZE_PACKETS = 200;
+    private static int MAX_SIZE_PACKETS = 3000;
 
     /**
      * The size of {@link #pool}.

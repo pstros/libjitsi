@@ -20,6 +20,7 @@ import java.util.*;
 import net.sf.fmj.media.rtp.util.*;
 
 import org.jitsi.service.neomedia.rtp.*;
+import org.jitsi.util.Logger;
 
 /**
  * webrtc/webrtc/modules/remote_bitrate_estimator/remote_bitrate_estimator_single_stream.cc
@@ -31,6 +32,9 @@ public class RemoteBitrateEstimatorSingleStream
                RecurringProcessible,
                RemoteBitrateEstimator
 {
+    private static final Logger logger
+        = Logger.getLogger(RemoteBitrateEstimatorSingleStream.class);
+
     private static final int kProcessIntervalMs = 1000;
 
     private static final int kStreamTimeOutMs = 2000;
@@ -179,7 +183,7 @@ public class RemoteBitrateEstimatorSingleStream
                 // We also have to update the estimate immediately if we are
                 // overusing and the target bitrate is too high compared to what
                 // we are receiving.
-                updateEstimate(nowMs);
+                updateEstimate(nowMs, ssrc_);
             }
         }
         } // synchronized (critSect)
@@ -225,7 +229,7 @@ public class RemoteBitrateEstimatorSingleStream
         {
             long nowMs = System.currentTimeMillis();
 
-            updateEstimate(nowMs);
+            updateEstimate(nowMs, null);
             lastProcessTime = nowMs;
         }
         return 0L;
@@ -246,13 +250,13 @@ public class RemoteBitrateEstimatorSingleStream
     }
 
     /**
-     * Triggers a new estimate calculation.
-     *
-     * @param nowMs
-     */
-    private void updateEstimate(long nowMs)
-    {
-        synchronized (critSect)
+  * Triggers a new estimate calculation.
+  *
+  * @param nowMs
+  * @param ssrc_
+  */
+  private void updateEstimate(long nowMs, Integer ssrc_) {
+      synchronized (critSect)
         {
         BandwidthUsage bwState = BandwidthUsage.kBwNormal;
         double sumNoiseVar = 0D;
@@ -297,6 +301,11 @@ public class RemoteBitrateEstimatorSingleStream
         input.bwState = bwState;
         input.incomingBitRate = incomingBitrate.getRate(nowMs);
         input.noiseVar = meanNoiseVar;
+        if (ssrc_ != null) {
+          logger.trace("STAT_BWSTATE " + ssrc_ + " " + input.bwState);
+          logger.trace("STAT_INCOMING_BITRATE " + ssrc_ + " " + input.incomingBitRate);
+          logger.trace("STAT_NOISE_VAR " + ssrc_ + " " + input.noiseVar);
+        }
 
         RateControlRegion region = remoteRate.update(input, nowMs);
         long targetBitrate = remoteRate.updateBandwidthEstimate(nowMs);

@@ -277,6 +277,34 @@ public class BasicRTCPTerminationStrategy
         // SDES
         RTCPSDESPacket sdes = makeSDES();
 
+        long ssrc = getStream().getRemoteSourceID();
+        if (srs != null ) {
+          for (RTCPSRPacket sr : srs) {
+            for (RTCPReportBlock report: sr.reports) {
+              long onssrc = 0xFFFFFFFFL & report.getSSRC();
+              long byssrc = 0XFFFFFFFFL & sr.ssrc;
+              //logger.trace("STAT_OUT_LOST_TO_" + ssrc + "_BY_" +   byssrc + " " + onssrc + " " + report.getNumLost());
+              logger.trace("STAT_OUT_JITTER_ON_" + onssrc + " " + byssrc + " " + getVideoJitterMs(report.getJitter()));
+            }
+          }
+
+        }
+        if (rrs != null) {
+          for (RTCPRRPacket rr: rrs) {
+            for (RTCPReportBlock report: rr.reports) {
+              long onssrc = 0xFFFFFFFFL & report.getSSRC();
+              long byssrc = 0XFFFFFFFFL & rr.ssrc;
+              //logger.trace("STAT_OUT_LOST_TO_" + ssrc + "_BY_" +   byssrc + " " + onssrc + " " + report.getNumLost());
+              logger.trace("STAT_OUT_JITTER_ON_" + onssrc + " " + byssrc + " " + getVideoJitterMs(report.getJitter()));
+              //logger.trace("STAT_OUT_JITTER_TO_" + ssrc + "_BY_" + byssrc + " " + onssrc + " " + getVideoJitterMs(report.getJitter()));
+            }
+            }
+        }
+        if (remb != null) {
+          long onssrc = remb.senderSSRC & 0xFFFFFFFFL;
+          logger.trace("STAT_OUT_REMB_TO_" + ssrc + " " + onssrc + " " + remb.getBitrate());
+        }
+
         // Build the RTCPCompoundPackets to return.
         List<RTCPCompoundPacket> compounds = compound(rrs, srs, sdes, remb);
 
@@ -295,6 +323,7 @@ public class BasicRTCPTerminationStrategy
                 rawPkts.add(generator.apply(compound));
             }
         }
+        logger.trace("Adding raw report packets to stream:" + rawPkts.size());
         return rawPkts;
     }
 
@@ -352,7 +381,7 @@ public class BasicRTCPTerminationStrategy
             {
                 break;
             }
-            
+
             List<RTCPPacket> rtcps = new ArrayList<>();
 
             rtcps.add(report);
@@ -770,11 +799,21 @@ public class BasicRTCPTerminationStrategy
             if (!info.ours && info.sender)
             {
                 RTCPReportBlock reportBlock = info.makeReceiverReport(time);
+                {
+                  logger.trace("strategy generating reports.");
+                  long ssrc = stream.getRemoteSourceID();
+                  //logger.trace("STAT_OUT_JITTER_TO_" + ssrc + " " + reportBlock.getSSRC() + " " + getVideoJitterMs(reportBlock.getJitter()));
+                  //logger.trace("STAT_OUT_LOST_TO_" + ssrc + " " + reportBlock.getSSRC() + " " + reportBlock.getNumLost());
+                }
                 reportBlocks.add(reportBlock);
             }
         }
 
         return reportBlocks.toArray(new RTCPReportBlock[reportBlocks.size()]);
+    }
+
+    private double getVideoJitterMs(double timestampJitter) {
+      return (timestampJitter / 90000) * 1000;
     }
 
     /**
@@ -951,7 +990,7 @@ public class BasicRTCPTerminationStrategy
 
         ownSDES.items = ownItems.toArray(new RTCPSDESItem[ownItems.size()]);
         ownSDES.ssrc = (int) getLocalSSRC();
-        
+
         Collection<RTCPSDES> chunks = new ArrayList<>();
 
         chunks.add(ownSDES);
@@ -1062,6 +1101,7 @@ public class BasicRTCPTerminationStrategy
 
             if (rrs != null && !rrs.isEmpty())
             {
+                logger.trace("strategy adding rrs onto gateway'd packet.");
                 outPackets.addAll(0, rrs);
             }
             else
@@ -1140,7 +1180,7 @@ public class BasicRTCPTerminationStrategy
             }
         }
 
-        private boolean timeToSendRTCPReport()
+    private boolean timeToSendRTCPReport()
         {
             final long now = System.currentTimeMillis();
 

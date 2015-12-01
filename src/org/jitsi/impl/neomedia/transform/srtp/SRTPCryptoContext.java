@@ -573,13 +573,15 @@ public class SRTPCryptoContext
     {
         if (logger.isDebugEnabled())
         {
-            logger.debug(
-                    "Reverse transform for SSRC " + this.ssrc
-                        + " SeqNo=" + pkt.getSequenceNumber()
-                        + " s_l=" + s_l
-                        + " seqNumSet=" + seqNumSet
-                        + " guessedROC=" + guessedROC
-                        + " roc=" + roc);
+          String seqNo = Long.toString(0xFFFFL & pkt.getSequenceNumber());
+          logger.debug("STAT_SSRC_PACKET " + Long.toString(0xFFFFFFFFL & this.ssrc) + " " + seqNo);
+            //logger.debug(
+                    //"Reverse transform for SSRC " + Long.toString(0xFFFFFFFFL & this.ssrc)
+                        //+ " SeqNo=" + Long.toString(0xFFFFL & pkt.getSequenceNumber())
+                        //+ " s_l=" + s_l
+                        //+ " seqNumSet=" + seqNumSet
+                        //+ " guessedROC=" + guessedROC
+                        //+ " roc=" + roc);
         }
 
         int seqNo = pkt.getSequenceNumber();
@@ -686,7 +688,7 @@ public class SRTPCryptoContext
 
         // Encrypt the packet using F8 Mode encryption.
         case SRTPPolicy.AESF8_ENCRYPTION:
-        case SRTPPolicy.TWOFISHF8_ENCRYPTION:   
+        case SRTPPolicy.TWOFISHF8_ENCRYPTION:
             processPacketAESF8(pkt);
             break;
         }

@@ -234,6 +234,8 @@ public class MediaStreamStatsImpl
                 {
                     updateNewReceivedFeedback(
                             (RTCPFeedback) feedbackReports.get(0));
+                    //logger.trace("JITTER-seen-by" + report.getSSRC() + " " + ((RTCPFeedback)feedbackReports.get(0)).getSSRC() + " " + getJitterMs(StreamDirection.UPLOAD));
+
                 }
             }
 
@@ -252,6 +254,7 @@ public class MediaStreamStatsImpl
                 {
                     updateNewSentFeedback(
                             (RTCPFeedback) feedbackReports.get(0));
+                    //logger.trace("JITTER-sent " + ((RTCPFeedback)feedbackReports.get(0)).getSSRC() + " " + getJitterMs(StreamDirection.UPLOAD));
                 }
             }
         };
@@ -357,6 +360,7 @@ public class MediaStreamStatsImpl
                         + ", dlsr " + dlsr);
         }
 
+        //logger.trace("STAT_SSRC_RTT_MS " + feedback.getSSRC() + " " + rtt);
         return rtt;
     }
 
@@ -1194,6 +1198,11 @@ public class MediaStreamStatsImpl
         // deviation of the jitter.
         jitterRTPTimestampUnits[streamDirection.ordinal()]
             = feedback.getJitter();
+
+        //logger.trace("Feedback for SSRC " + feedback.getSSRC()
+            //+ " Jitter " + getJitterMs(streamDirection)
+            //+ " NbLost "+ feedback.getNumLost()
+            //+ " FractionLost " + feedback.getFractionLost());
     }
 
     /**
@@ -1262,6 +1271,7 @@ public class MediaStreamStatsImpl
         double newPercentLoss
             = MediaStreamStatsImpl.computePercentLoss(nbSteps, newNbLost);
 
+
         percentLoss[streamDirectionIndex]
             = MediaStreamStatsImpl.computeEWMA(
                     nbSteps,
@@ -1289,7 +1299,6 @@ public class MediaStreamStatsImpl
         long newNbLost
             = nbPacketsLostUpload - nbLost[streamDirection.ordinal()];
         long nbSteps = uploadNewNbRecv - uploadFeedbackNbPackets;
-
         updateNbLoss(streamDirection, newNbLost, nbSteps);
 
         // Updates the upload loss counters.
@@ -1400,6 +1409,7 @@ public class MediaStreamStatsImpl
     {
         if (remb != null)
         {
+            logger.trace("STAT_RECV_REMB " + remb.senderSSRC + " " + remb.getBitrate());
             for (REMBListener listener : rembListeners)
             {
                 listener.rembReceived(remb.getBitrate());

@@ -110,9 +110,7 @@ public class StatisticsEngine
      */
     private static boolean isRTCP(RawPacket pkt)
     {
-        return
-            getLengthIfRTCP(pkt.getBuffer(), pkt.getOffset(), pkt.getLength())
-                > 0;
+        return getLengthIfRTCP(pkt.getBuffer(), pkt.getOffset(), pkt.getLength()) > 0;
     }
 
     /**
@@ -375,7 +373,7 @@ public class StatisticsEngine
                 {
                     /*
                      * Does the packet still look like an RTCP packet of the
-                     * advertised packet type (PT)? 
+                     * advertised packet type (PT)?
                      */
                     int minRTCPPktLen = (2 + rc * 6) * 4;
                     int receptionReportBlockOff = off + 2 * 4;
@@ -618,7 +616,7 @@ public class StatisticsEngine
          * which we do not have (because, for example, we do not voice activity
          * detection).
          */
-        
+
         // residual echo return loss (RERL)
         /*
          * WebRTC, which is available and default on OS X, appears to be able to
@@ -637,7 +635,7 @@ public class StatisticsEngine
         /*
          * TODO Requires notions such as noise and noise sources, simultaneous
          * impairments, and others that we do not know how to define at the time
-         * of this writing. 
+         * of this writing.
          */
         // ext. R factor
         /*
@@ -1025,6 +1023,20 @@ public class StatisticsEngine
     private boolean updateReceivedMediaStreamStats(
             RTCPPacket[] in, List<RTCPPacket> out)
     {
+/*
+ *            long ssrc = this.mediaStream.getRemoteSourceID();
+ *            //if (r instanceof RTCPReceiverReport) {
+ *              //logger.trace("STAT_RECV_RR " + ssrc + " " + r.getFeedbackReports().size());
+ *            //} else {
+ *              //logger.trace("STAT_RECV_SR " + ssrc + " " + r.getFeedbackReports().size());
+ *            //}
+ *
+ *            Iterator<RTCPFeedback> frIter = r.getFeedbackReports().iterator();
+ *            while (frIter.hasNext()) {
+ *              RTCPFeedback fr = frIter.next();
+ *              //logger.trace("STAT_IN_LOST_FROM_" + ssrc + "_BY_" + r.getSSRC() + " " + fr.getSSRC() + " " + fr.getNumLost());
+ *              logger.trace("STAT_IN_JITTER_ON_" + fr.getSSRC() + " " + r.getSSRC() + " " + getVideoJitterMs(fr.getJitter()));
+ */
         boolean removed = false;
         MediaStreamStatsImpl streamStats = mediaStream.getMediaStreamStats();
 
@@ -1086,6 +1098,11 @@ public class StatisticsEngine
         }
 
         return removed;
+    }
+
+
+    private double getVideoJitterMs(double timestampJitter) {
+      return (timestampJitter / 90000) * 1000;
     }
 
     /**
@@ -1180,6 +1197,18 @@ public class StatisticsEngine
     {
         RTCPReport r = parseRTCPReport(pkt);
 
+        if (mediaType == MediaType.VIDEO) {
+          long ssrc = this.mediaStream.getRemoteSourceID();
+
+          Iterator<RTCPFeedback> frIter = r.getFeedbackReports().iterator();
+          while (frIter.hasNext()) {
+            RTCPFeedback fr = frIter.next();
+            //logger.trace("STAT_OUT_LOST_TO_" + ssrc + "_BY_" + r.getSSRC() + " " + fr.getSSRC() + " " + fr.getNumLost());
+            logger.trace("STAT_OUT_JITTER_ON_" + fr.getSSRC() + " " + r.getSSRC() + " " + getVideoJitterMs(fr.getJitter()));
+            //logger.trace("STAT_OUT_JITTER_TO_" + ssrc + "_BY_" + r.getSSRC() + " " + fr.getSSRC() + " " + getVideoJitterMs(fr.getJitter()));
+          }
+        }
+
         if (r != null)
         {
             mediaStream.getMediaStreamStats().getRTCPReports().rtcpReportSent(
@@ -1209,7 +1238,7 @@ public class StatisticsEngine
                 {
                     // As sender reports are sent on every 5 seconds, print
                     // every 4th packet, on every 20 seconds.
-                    if(numberOfRTCPReports % 4 == 1)
+                    //if(numberOfRTCPReports % 4 == 1)
                     {
                         StringBuilder buff = new StringBuilder(RTP_STAT_PREFIX);
                         String mediaTypeStr
