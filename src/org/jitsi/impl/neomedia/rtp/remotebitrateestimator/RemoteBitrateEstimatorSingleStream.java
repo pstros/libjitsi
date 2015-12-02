@@ -183,7 +183,7 @@ public class RemoteBitrateEstimatorSingleStream
                 // We also have to update the estimate immediately if we are
                 // overusing and the target bitrate is too high compared to what
                 // we are receiving.
-                updateEstimate(nowMs, ssrc_);
+                updateEstimate(nowMs);
             }
         }
         } // synchronized (critSect)
@@ -229,7 +229,7 @@ public class RemoteBitrateEstimatorSingleStream
         {
             long nowMs = System.currentTimeMillis();
 
-            updateEstimate(nowMs, null);
+            updateEstimate(nowMs);
             lastProcessTime = nowMs;
         }
         return 0L;
@@ -255,7 +255,7 @@ public class RemoteBitrateEstimatorSingleStream
   * @param nowMs
   * @param ssrc_
   */
-  private void updateEstimate(long nowMs, Integer ssrc_) {
+  private void updateEstimate(long nowMs) {
       synchronized (critSect)
         {
         BandwidthUsage bwState = BandwidthUsage.kBwNormal;
@@ -301,10 +301,12 @@ public class RemoteBitrateEstimatorSingleStream
         input.bwState = bwState;
         input.incomingBitRate = incomingBitrate.getRate(nowMs);
         input.noiseVar = meanNoiseVar;
-        if (ssrc_ != null) {
-          logger.trace("STAT_BWSTATE " + ssrc_ + " " + input.bwState);
-          logger.trace("STAT_INCOMING_BITRATE " + ssrc_ + " " + input.incomingBitRate);
-          logger.trace("STAT_NOISE_VAR " + ssrc_ + " " + input.noiseVar);
+
+        for (Integer ssrc: getSsrcs()) {
+          long statssrc = 0XFFFFFFFFL & ssrc;
+          logger.trace("STAT_BWSTATE " + statssrc + " " + input.bwState);
+          logger.trace("STAT_INCOMING_BITRATE " + statssrc + " " + input.incomingBitRate);
+          logger.trace("STAT_NOISE_VAR " + statssrc + " " + input.noiseVar);
         }
 
         RateControlRegion region = remoteRate.update(input, nowMs);
