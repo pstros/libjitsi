@@ -36,6 +36,7 @@ import org.jitsi.impl.neomedia.rtcp.termination.strategies.*;
 import org.jitsi.impl.neomedia.rtp.*;
 import org.jitsi.impl.neomedia.rtp.translator.*;
 import org.jitsi.impl.neomedia.transform.*;
+import org.jitsi.impl.neomedia.transform.rewriting.*;
 import org.jitsi.impl.neomedia.transform.csrc.*;
 import org.jitsi.impl.neomedia.transform.dtmf.*;
 import org.jitsi.impl.neomedia.transform.fec.*;
@@ -316,8 +317,9 @@ public class MediaStreamImpl
      * <tt>RTPConnector</tt>'s transformer chain, which allows the "external"
      * transformer to be swapped.
      */
-    private final TransformEngineWrapper externalTransformerWrapper
-        = new TransformEngineWrapper();
+    private final TransformEngineWrapper<TransformEngine>
+        externalTransformerWrapper
+            = new TransformEngineWrapper<>();
 
     /**
      * The <tt>TransformEngine</tt> instance registered in the
@@ -2012,7 +2014,7 @@ public class MediaStreamImpl
     {
         try
         {
-            if(!logger.isInfoEnabled())
+            if(!logger.isDebugEnabled())
                 return;
 
             //print flow statistics.
@@ -2041,7 +2043,7 @@ public class MediaStreamImpl
                 .append("RTCP sent: ").append(s.getRTCPSent()).append(eol)
                 .append("transmit failed: ").append(s.getTransmitFailed());
 
-            logger.info(buff);
+            logger.debug(buff);
 
             GlobalReceptionStats rs = rtpManager.getGlobalReceptionStats();
             MediaFormat format = getFormat();
@@ -2087,7 +2089,7 @@ public class MediaStreamImpl
                     .append(eol)
                 .append("unknown types: ").append(rs.getUnknownTypes());
 
-            logger.info(buff);
+            logger.debug(buff);
         }
         catch(Throwable t)
         {

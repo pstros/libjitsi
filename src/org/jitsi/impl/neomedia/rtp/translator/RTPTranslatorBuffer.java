@@ -13,28 +13,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.jitsi.impl.neomedia.rtcp.termination.strategies;
+package org.jitsi.impl.neomedia.rtp.translator;
 
-import org.jitsi.impl.neomedia.transform.*;
-import org.jitsi.service.neomedia.*;
+import javax.media.*;
 
 /**
- * Forwards whatever it receives from the network but it doesn't generate
- * anything. This strategy will be useful for conferences of up to 2
- * participants.
+ * Privately used by {@link OutputDataStreamImpl} at the time of this writing
+ * and extracted into its own file for the sake of readability.
  *
- * @author George Politis
+ * @author Lyubomir Marinov
  */
-public class SilentBridgeRTCPTerminationStrategy
-    implements RTCPTerminationStrategy
+class RTPTranslatorBuffer
 {
-    public PacketTransformer getRTPTransformer()
-    {
-        return null;
-    }
+    public byte[] data;
 
-    public PacketTransformer getRTCPTransformer()
-    {
-        return null;
-    }
+    public StreamRTPManagerDesc exclusion;
+
+    public Format format;
+
+    public int length;
 }

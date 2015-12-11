@@ -15,8 +15,8 @@
  */
 package org.jitsi.impl.neomedia.transform;
 
-import org.jitsi.impl.libjitsi.*;
 import org.jitsi.impl.neomedia.*;
+import org.jitsi.service.libjitsi.*;
 import org.jitsi.service.packetlogging.*;
 import org.jitsi.service.neomedia.*;
 import org.jitsi.util.*;
@@ -65,6 +65,13 @@ public class DebugTransformEngine implements TransformEngine
     private final MediaStreamImpl mediaStream;
 
     /**
+     * The {@code PacketLoggingService} (to be) used by this instance. Cached
+     * for the sake of performance because fetching OSGi services is not
+     * inexpensive.
+     */
+    private final PacketLoggingService _pktLogging;
+
+    /**
      * The <tt>PacketTransformer</tt> that logs RTCP packets.
      */
     private final SinglePacketTransformer rtcpTransformer
@@ -80,10 +87,15 @@ public class DebugTransformEngine implements TransformEngine
      * Ctor.
      *
      * @param mediaStream the <tt>MediaStream</tt> that owns this instance.
+     * @param pktLogging the {@code PacketLoggingService} to be used by the new
+     * instance
      */
-    public DebugTransformEngine(MediaStreamImpl mediaStream)
+    public DebugTransformEngine(
+            MediaStreamImpl mediaStream,
+            PacketLoggingService pktLogging)
     {
         this.mediaStream = mediaStream;
+        _pktLogging = pktLogging;
     }
 
     /**
@@ -98,14 +110,13 @@ public class DebugTransformEngine implements TransformEngine
     public static DebugTransformEngine createDebugTransformEngine(
             MediaStreamImpl mediaStream)
     {
-        PacketLoggingService packetLogging
-            = LibJitsiImpl.getPacketLoggingService();
+        PacketLoggingService pktLogging = LibJitsi.getPacketLoggingService();
 
-        if (packetLogging != null
-                && packetLogging.isLoggingEnabled(
+        if (pktLogging != null
+                && pktLogging.isLoggingEnabled(
                         PacketLoggingService.ProtocolName.ARBITRARY))
         {
-            return new DebugTransformEngine(mediaStream);
+            return new DebugTransformEngine(mediaStream, pktLogging);
         }
         else
         {
@@ -146,18 +157,18 @@ public class DebugTransformEngine implements TransformEngine
 
         if (mediaStream == null)
         {
-            logger.debug("Not logging a packet because the mediaStream is " +
-                    "null");
+            logger.debug(
+                    "Not logging a packet because the mediaStream is null");
             return pkt;
         }
 
-        PacketLoggingService pktLogging
-            = LibJitsiImpl.getPacketLoggingService();
+        PacketLoggingService pktLogging = _pktLogging;
 
         if (pktLogging == null)
         {
-            logger.debug("Not logging a packet because the packet logging " +
-                    "service is null.");
+            logger.debug(
+                    "Not logging a packet because the PacketLoggingService is"
+                        + " null.");
             return pkt;
         }
 
