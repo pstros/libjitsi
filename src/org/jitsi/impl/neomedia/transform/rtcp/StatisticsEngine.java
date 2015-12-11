@@ -1204,7 +1204,7 @@ public class StatisticsEngine
           while (frIter.hasNext()) {
             RTCPFeedback fr = frIter.next();
             //logger.trace("STAT_OUT_LOST_TO_" + ssrc + "_BY_" + r.getSSRC() + " " + fr.getSSRC() + " " + fr.getNumLost());
-            logger.trace("STAT_OUT_JITTER_ON_" + fr.getSSRC() + " " + r.getSSRC() + " " + getVideoJitterMs(fr.getJitter()));
+            logger.trace("STAT " + fr.getSSRC() + "_SEND_JITTER_BY_" + r.getSSRC() + ":" + getVideoJitterMs(fr.getJitter()));
             //logger.trace("STAT_OUT_JITTER_TO_" + ssrc + "_BY_" + r.getSSRC() + " " + fr.getSSRC() + " " + getVideoJitterMs(fr.getJitter()));
           }
         }

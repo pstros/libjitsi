@@ -171,7 +171,7 @@ public class RemoteBitrateEstimatorSingleStream
 
         BandwidthUsage priorState = overuseDetector.getState();
 
-        overuseDetector.update(payloadSize, -1L, rtpTimestamp, arrivalTimeMs);
+        overuseDetector.update(payloadSize, -1L, rtpTimestamp, arrivalTimeMs, ssrc);
         if (overuseDetector.getState() == BandwidthUsage.kBwOverusing)
         {
             long incomingBitrate = this.incomingBitrate.getRate(nowMs);
@@ -286,6 +286,7 @@ public class RemoteBitrateEstimatorSingleStream
 
                 if (overuseDetectorBwState.ordinal() > bwState.ordinal())
                     bwState = overuseDetectorBwState;
+
             }
         }
         // We can't update the estimate if we don't have any active streams.
@@ -302,15 +303,37 @@ public class RemoteBitrateEstimatorSingleStream
         input.incomingBitRate = incomingBitrate.getRate(nowMs);
         input.noiseVar = meanNoiseVar;
 
-        for (Integer ssrc: getSsrcs()) {
-          long statssrc = 0XFFFFFFFFL & ssrc;
-          logger.trace("STAT_BWSTATE " + statssrc + " " + input.bwState);
-          logger.trace("STAT_INCOMING_BITRATE " + statssrc + " " + input.incomingBitRate);
-          logger.trace("STAT_NOISE_VAR " + statssrc + " " + input.noiseVar);
-        }
-
         RateControlRegion region = remoteRate.update(input, nowMs);
         long targetBitrate = remoteRate.updateBandwidthEstimate(nowMs);
+
+        /*
+         *for (Iterator<OveruseDetector> it
+         *    = overuseDetectors.values().iterator(); it.hasNext();) {
+         *  OveruseDetector overuseDetector = it.next();
+         */
+
+          for (Integer ssrc: getSsrcs()) {
+            long statssrc = 0XFFFFFFFFL & ssrc;
+            //String stats = statssrc + "_EST_OFFSET:" + overuseDetector.getOffset()
+              //+ "," + statssrc + "_EST_RELATIVE_INTERARRIVAL:" +
+                //(overuseDetector.getTimeDeltas()[0] - overuseDetector.getTimeDeltas()[1])
+              //+ "," + statssrc + "_EST_SIZE_DELTA:" +
+                //(overuseDetector.getCurrentFrame().size - overuseDetector.getPrevFrame().size)
+              //+ "," + statssrc + "_EST_CAP:" + (1.0/overuseDetector.getSlope())
+              //+ "," + statssrc + "_EST_NOISE_VAR:" + overuseDetector.getNoiseVar()
+              //+ "," + statssrc + "_EST_FRAME_ARRIVED:" + overuseDetector.getTimeDeltas()[0]
+              //+ "," + statssrc + "_EST_FRAME_SENT:" + overuseDetector.getTimeDeltas()[1]
+              ////+ "," + statssrc + "_EST_FRAME_CUR_SIZE:" + overuseDetector.getCurrentFrame().size
+              //+ "," + statssrc + "_EST_FRAME_PREV_SIZE:" + overuseDetector.getPrevFrame().size
+              ////+ "," + statssrc + "_EST_FRAME_CUR_TS:" + overuseDetector.getCurrentFrame().timestamp
+              ////+ "," + statssrc + "_EST_FRAME_PREV_TS:" + overuseDetector.getPrevFrame().timestamp
+              //+ "," + statssrc + "_EST_BWSTATE:" + input.bwState.ordinal()
+            String stats = statssrc + "_EST_INCOMING_BITRATE:" + input.incomingBitRate
+              + "," + statssrc + "_EST_REGION:" + region.ordinal()
+              + "," + statssrc + "_EST_TARGET:" + targetBitrate;
+            logger.trace("STAT " + stats);
+          }
+            //}
 
         if (remoteRate.isValidEstimate())
         {

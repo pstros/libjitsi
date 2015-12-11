@@ -15,6 +15,8 @@
  */
 package org.jitsi.impl.neomedia.rtp.remotebitrateestimator;
 
+import org.jitsi.util.Logger;
+
 import java.util.*;
 
 /**
@@ -25,7 +27,11 @@ import java.util.*;
  */
 public class OveruseDetector
 {
-    private static class FrameSample
+
+    private static final Logger logger
+        = Logger.getLogger(OveruseDetector.class);
+
+    public static class FrameSample
     {
         public long completeTimeMs = -1L;
 
@@ -54,7 +60,7 @@ public class OveruseDetector
 
     private static final int kMinFramePeriodHistoryLength = 60;
 
-    private static final int kOverUsingTimeThreshold = 100;
+    private static final int kOverUsingTimeThreshold = 200;
 
     /**
      * Creates and returns a deep copy of a <tt>double</tt> two-dimensional
@@ -88,10 +94,11 @@ public class OveruseDetector
             long prevTimestamp)
     {
         long timestampDiff = timestamp - prevTimestamp;
+        //logger.trace("Diffing timestamps; incoming:" + timestamp + ", prev:" + prevTimestamp + ", result:" + timestampDiff);
 
         // Assume that a diff this big must be due to reordering. Don't update
         // with reordered samples.
-        return (timestampDiff < 0x80000000L);
+        return (timestampDiff < 0x80000000L && timestampDiff >= 0);
     }
 
     private double avgNoise;
@@ -111,7 +118,7 @@ public class OveruseDetector
      * <tt>updateKalman</tt>.
      */
     private final double[] h = new double[2];
-    
+
     private BandwidthUsage hypothesis = BandwidthUsage.kBwNormal;
 
     /**
@@ -145,6 +152,8 @@ public class OveruseDetector
     private double slope;
 
     private double threshold;
+
+    private double residual;
 
     /**
      * The <tt>long</tt> <tt>tDelta</tt> and <tt>double</tt> <tt>tsDelta</tt>
@@ -240,7 +249,28 @@ public class OveruseDetector
         return varNoise;
     }
 
-    public long getPacketTimeMs()
+  /**
+     * @return the currentFrame
+     */
+  public FrameSample getCurrentFrame() {
+    return currentFrame;
+  }
+
+  /**
+   * @return the k
+   */
+  public double[] getK() {
+    return K;
+  }
+
+  /**
+   * @return the offset
+   */
+  public double getOffset() {
+    return offset;
+  }
+
+  public long getPacketTimeMs()
     {
         return packetTimeMs;
     }
@@ -297,7 +327,35 @@ public class OveruseDetector
         this.packetTimeMs = packetTimeMs;
     }
 
-    public void setRateControlRegion(RateControlRegion region)
+  /**
+     * @return the prevFrame
+     */
+  public FrameSample getPrevFrame() {
+    return prevFrame;
+  }
+
+  /**
+   * @return the slope
+   */
+  public double getSlope() {
+    return slope;
+  }
+
+  /**
+   * @return the residual
+   */
+  public double getResidual() {
+    return residual;
+  }
+
+  /**
+   * @return the timeDeltas
+   */
+  public double[] getTimeDeltas() {
+    return timeDeltas;
+  }
+
+  public void setRateControlRegion(RateControlRegion region)
     {
         switch (region)
         {
@@ -331,7 +389,7 @@ public class OveruseDetector
             int packetSize,
             long timestampMs,
             long rtpTimestamp,
-            long arrivalTimeMs)
+            long arrivalTimeMs, int ssrc)
     {
         boolean newTimestamp = (rtpTimestamp != currentFrame.timestamp);
 
@@ -353,10 +411,12 @@ public class OveruseDetector
         }
         else if (!isPacketInOrder(rtpTimestamp, timestampMs))
         {
+            logger.trace("Discarding out of order packet with timestamp:" + rtpTimestamp + ", current:" + currentFrame.timestamp);
             return;
         }
         else if (newTimestamp)
         {
+            logger.trace("New Frame detected with timestamp:" + rtpTimestamp + ", current complete time:" + currentFrame.completeTimeMs);
             // First packet of a later frame, the previous frame sample is ready.
             if (prevFrame.completeTimeMs >= 0L) // This is our second frame.
             {
@@ -366,6 +426,26 @@ public class OveruseDetector
                         /* tsDelta */ timeDeltas[1],
                         currentFrame.size,
                         prevFrame.size);
+
+                  long statssrc = 0XFFFFFFFFL & ssrc;
+                  String stats = statssrc + "_EST_OFFSET:" + this.getOffset()
+                    + "," + statssrc + "_EST_RELATIVE_INTERARRIVAL:" +
+                      (this.getTimeDeltas()[0] - this.getTimeDeltas()[1])
+                    + "," + statssrc + "_EST_SIZE_DELTA:" +
+                      (this.getCurrentFrame().size - this.getPrevFrame().size)
+                    + "," + statssrc + "_EST_SLOPE:" + (this.getSlope())
+                    + "," + statssrc + "_EST_NOISE_VAR:" + this.getNoiseVar()
+                    + "," + statssrc + "_EST_FRAME_ARRIVED:" + this.getTimeDeltas()[0]
+                    + "," + statssrc + "_EST_FRAME_SENT:" + this.getTimeDeltas()[1]
+                    + "," + statssrc + "_EST_FRAME_CUR_SIZE:" + this.getCurrentFrame().size
+                    + "," + statssrc + "_EST_FRAME_PREV_SIZE:" + this.getPrevFrame().size
+                    //+ "," + statssrc + "_EST_FRAME_CUR_TS:" + this.getCurrentFrame().timestamp
+                    //+ "," + statssrc + "_EST_FRAME_PREV_TS:" + this.getPrevFrame().timestamp
+                    + "," + statssrc + "_EST_BWSTATE:" + this.getState().ordinal()
+                    + "," + statssrc + "_EST_NUM_DELTAS:" + this.numOfDeltas
+                    + "," + statssrc + "_EST_THRESHOLD:" + this.threshold/60.0
+                    + "," + statssrc + "_EST_RESIDUAL:" + this.residual;
+                  logger.trace("STAT " + stats);
             }
             prevFrame.copy(currentFrame);
             // The new timestamp is now the current frame.
@@ -412,6 +492,7 @@ public class OveruseDetector
         Eh[1] = E[1][0]*h[0] + E[1][1]*h[1];
 
         double residual = tTsDelta - slope*h[0] - offset;
+        this.residual = residual;
         boolean stableState
             = (Math.min(numOfDeltas, 60) * Math.abs(offset) < threshold);
 

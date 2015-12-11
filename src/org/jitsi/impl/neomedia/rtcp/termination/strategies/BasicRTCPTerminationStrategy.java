@@ -284,7 +284,7 @@ public class BasicRTCPTerminationStrategy
               long onssrc = 0xFFFFFFFFL & report.getSSRC();
               long byssrc = 0XFFFFFFFFL & sr.ssrc;
               //logger.trace("STAT_OUT_LOST_TO_" + ssrc + "_BY_" +   byssrc + " " + onssrc + " " + report.getNumLost());
-              logger.trace("STAT_OUT_JITTER_ON_" + onssrc + " " + byssrc + " " + getVideoJitterMs(report.getJitter()));
+              logger.trace("STAT " + onssrc + "_SEND_JITTER_BY_" + byssrc + ":" + getVideoJitterMs(report.getJitter()));
             }
           }
 
@@ -295,14 +295,13 @@ public class BasicRTCPTerminationStrategy
               long onssrc = 0xFFFFFFFFL & report.getSSRC();
               long byssrc = 0XFFFFFFFFL & rr.ssrc;
               //logger.trace("STAT_OUT_LOST_TO_" + ssrc + "_BY_" +   byssrc + " " + onssrc + " " + report.getNumLost());
-              logger.trace("STAT_OUT_JITTER_ON_" + onssrc + " " + byssrc + " " + getVideoJitterMs(report.getJitter()));
-              //logger.trace("STAT_OUT_JITTER_TO_" + ssrc + "_BY_" + byssrc + " " + onssrc + " " + getVideoJitterMs(report.getJitter()));
+              logger.trace("STAT " + onssrc + "_SEND_JITTER_BY_" + byssrc + ":" + getVideoJitterMs(report.getJitter()));
             }
             }
         }
         if (remb != null) {
-          long onssrc = remb.senderSSRC & 0xFFFFFFFFL;
-          logger.trace("STAT_OUT_REMB_TO_" + ssrc + " " + onssrc + " " + remb.getBitrate());
+          long byssrc = remb.senderSSRC & 0xFFFFFFFFL;
+          logger.trace("STAT " + ssrc + "_SEND_REMB_BY_" + byssrc + ":" + remb.getBitrate());
         }
 
         // Build the RTCPCompoundPackets to return.

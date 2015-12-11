@@ -1409,7 +1409,7 @@ public class MediaStreamStatsImpl
     {
         if (remb != null)
         {
-            logger.trace("STAT_RECV_REMB " + remb.senderSSRC + " " + remb.getBitrate());
+            logger.trace("STAT " + remb.senderSSRC + "_RECV_REMB:" + remb.getBitrate());
             for (REMBListener listener : rembListeners)
             {
                 listener.rembReceived(remb.getBitrate());

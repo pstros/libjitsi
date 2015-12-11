@@ -574,7 +574,7 @@ public class SRTPCryptoContext
         if (logger.isDebugEnabled())
         {
           String seqNo = Long.toString(0xFFFFL & pkt.getSequenceNumber());
-          logger.debug("STAT_SSRC_PACKET " + Long.toString(0xFFFFFFFFL & this.ssrc) + " " + seqNo);
+          logger.debug("STAT " + Long.toString(0xFFFFFFFFL & this.ssrc) + "_PACKET:" + seqNo);
             //logger.debug(
                     //"Reverse transform for SSRC " + Long.toString(0xFFFFFFFFL & this.ssrc)
                         //+ " SeqNo=" + Long.toString(0xFFFFL & pkt.getSequenceNumber())
