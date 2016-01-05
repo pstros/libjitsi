@@ -1200,7 +1200,7 @@ public class StatisticsEngine
         if (mediaType == MediaType.VIDEO) {
           long ssrc = this.mediaStream.getRemoteSourceID();
 
-          if (r && r.getFeedbackReports()) {
+          if ((r != null) && (r.getFeedbackReports() != null)) {
             Iterator<RTCPFeedback> frIter = r.getFeedbackReports().iterator();
             while (frIter.hasNext()) {
               RTCPFeedback fr = frIter.next();
