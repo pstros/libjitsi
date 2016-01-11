@@ -51,6 +51,11 @@ public class RTCPReceiverFeedbackTermination
     private static final int MIN_RTCP_REPORT_BLOCKS = 0;
 
     /**
+     * The maximum estimated bitrate to allow in REMB packets
+     */
+    private static final long MAX_BITRATE = 1000000L;
+
+    /**
      * The reporting period for RRs and REMBs.
      */
     private static final long REPORT_PERIOD_MS = 500;
@@ -351,6 +356,19 @@ public class RTCPReceiverFeedbackTermination
         }
         else
         {
+            if (bitrate > MAX_BITRATE)
+            {
+                bitrate = MAX_BITRATE;
+            }
+
+            if (logger.isDebugEnabled())
+            {
+                logger.debug(
+                    "Estimated bitrate (bps): " + bitrate + ", dest: "
+                        + Arrays.toString(dest) + ", time (ms): "
+                        + System.currentTimeMillis());
+            }
+
             return new RTCPREMBPacket(senderSSRC, 0L, bitrate, dest);
         }
     }
