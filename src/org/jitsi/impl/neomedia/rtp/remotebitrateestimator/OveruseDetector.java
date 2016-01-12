@@ -60,7 +60,7 @@ public class OveruseDetector
 
     private static final int kMinFramePeriodHistoryLength = 60;
 
-    private static final int kOverUsingTimeThreshold = 200;
+    private static final int kOverUsingTimeThreshold = 100;
 
     /**
      * Creates and returns a deep copy of a <tt>double</tt> two-dimensional
@@ -98,7 +98,7 @@ public class OveruseDetector
 
         // Assume that a diff this big must be due to reordering. Don't update
         // with reordered samples.
-        return (timestampDiff < 0x80000000L && timestampDiff >= 0);
+        return (timestampDiff < 0x80000000L && timestampDiff >= 0L);
     }
 
     private double avgNoise;

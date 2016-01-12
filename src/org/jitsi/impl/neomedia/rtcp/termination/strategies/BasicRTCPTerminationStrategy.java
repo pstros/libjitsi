@@ -61,6 +61,9 @@ public class BasicRTCPTerminationStrategy
      */
     private static final int MIN_RTCP_REPORT_BLOCKS = 0;
 
+
+    private static final long MAX_BITRATE = 1250000L;
+
     /**
      * A reusable array that holds {@link #MIN_RTCP_REPORT_BLOCKS}
      * <tt>RTCPReportBlock</tt>s.
@@ -873,6 +876,10 @@ public class BasicRTCPTerminationStrategy
         }
         else
         {
+            if (bitrate > MAX_BITRATE) {
+              bitrate = MAX_BITRATE;
+            }
+
             if (logger.isDebugEnabled())
                 logger.debug("Estimated bitrate: " + bitrate);
 
