@@ -91,7 +91,7 @@ public class OveruseDetector
 
         // Assume that a diff this big must be due to reordering. Don't update
         // with reordered samples.
-        return (timestampDiff < 0x80000000L);
+        return (timestampDiff < 0x80000000L && timestampDiff >= 0L);
     }
 
     private double avgNoise;
@@ -111,7 +111,7 @@ public class OveruseDetector
      * <tt>updateKalman</tt>.
      */
     private final double[] h = new double[2];
-    
+
     private BandwidthUsage hypothesis = BandwidthUsage.kBwNormal;
 
     /**
