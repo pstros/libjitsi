@@ -42,6 +42,12 @@ import org.jitsi.util.*;
 public class SsrcRewritingEngine implements TransformEngine
 {
     /**
+     * The <tt>Random</tt> that generates initial sequence numbers. Instances of
+     * {@code java.util.Random} are thread-safe since Java 1.7.
+     */
+    private static final Random RANDOM = new Random();
+
+    /**
      * The <tt>Logger</tt> used by the <tt>SsrcRewritingEngine</tt> class and
      * its instances to print debug information.
      */
@@ -98,6 +104,11 @@ public class SsrcRewritingEngine implements TransformEngine
      * Parses <tt>RTCPCompoundPacket</tt>s from <tt>RawPacket</tt>s.
      */
     private final RTCPPacketParserEx parser = new RTCPPacketParserEx();
+
+    /**
+     * The <tt>SeqnumBaseKeeper</tt> of this instance.
+     */
+    private final SeqnumBaseKeeper seqnumBaseKeeper = new SeqnumBaseKeeper();
 
     /**
      * A <tt>Map</tt> that maps source SSRCs to <tt>SsrcGroupRewriter</tt>s. It
@@ -187,7 +198,7 @@ public class SsrcRewritingEngine implements TransformEngine
     public SsrcRewritingEngine(MediaStream mediaStream)
     {
         this.mediaStream = mediaStream;
-        logDebug("Created a new SSRC rewriting engine.");
+        logger.debug("Created a new SSRC rewriting engine.");
     }
 
     /**
@@ -231,7 +242,7 @@ public class SsrcRewritingEngine implements TransformEngine
         // FIXME maps, again. What's wrong with simple arrays?
         if (!assertInitialized())
         {
-            logWarn("Failed to map/unmap because the SSRC rewriting engine is" +
+            logger.warn("Failed to map/unmap because the SSRC rewriting engine is" +
                     "not initialized.");
             return;
         }
@@ -317,78 +328,13 @@ public class SsrcRewritingEngine implements TransformEngine
     }
 
     /**
-     * Utility method that prepends the receiver identifier to the printed
-     * debug message.
-     *
-     * @param msg the debug message to print.
-     */
-    void logDebug(String msg)
-    {
-        if (logger.isDebugEnabled())
-        {
-            logger.debug(
-                    mediaStream.getProperty(
-                            MediaStream.PNAME_RECEIVER_IDENTIFIER)
-                        + ": " + msg);
-        }
-    }
-
-    /**
-     * Utility method that prepends the receiver identifier to the printed
-     * warn message.
-     *
-     * @param msg the warning message to print.
-     */
-    void logWarn(String msg)
-    {
-        if (logger.isWarnEnabled())
-        {
-            logger.warn(
-                    mediaStream.getProperty(
-                            MediaStream.PNAME_RECEIVER_IDENTIFIER)
-                        + ": " + msg);
-        }
-    }
-
-     /**
-      * Utility method that prepends the receiver identifier to the printed
-      * error message.
-      *
-      * @param msg the error message to print.
-      * @param t the throwable that caused the error.
-     */
-    private void logError(String msg, Throwable t)
-    {
-        logger.error(
-                mediaStream.getProperty(MediaStream.PNAME_RECEIVER_IDENTIFIER)
-                    + ": " + msg, t);
-    }
-
-     /**
-      * Utility method that prepends the receiver identifier to the printed
-      * info message.
-      *
-      *  @param msg the info message to print.
-      */
-    void logInfo(String msg)
-    {
-        if (logger.isInfoEnabled())
-        {
-            logger.info(
-                    mediaStream.getProperty(
-                            MediaStream.PNAME_RECEIVER_IDENTIFIER)
-                        + ": " + msg);
-        }
-    }
-
-    /**
      * Initializes some expensive ConcurrentHashMaps for this engine instance.
      */
     private synchronized boolean assertInitialized()
     {
         if (mediaStream == null)
         {
-            logWarn("This instance is not properly initialized because " +
+            logger.warn("This instance is not properly initialized because " +
                     "the stream is null.");
             return false;
         }
@@ -398,7 +344,7 @@ public class SsrcRewritingEngine implements TransformEngine
             return true;
         }
 
-        logDebug("Initilizing the SSRC rewriting engine.");
+        logger.debug("Initilizing the SSRC rewriting engine.");
         origin2rewriter = new ConcurrentHashMap<>();
         target2rewriter = new HashMap<>();
         rtx2primary = new ConcurrentHashMap<>();
@@ -426,7 +372,7 @@ public class SsrcRewritingEngine implements TransformEngine
 
         if (logger.isDebugEnabled())
         {
-            logDebug("Configuring the SSRC rewriting engine to rewrite: "
+            logger.debug("Configuring the SSRC rewriting engine to rewrite: "
                     + (ssrcOrig & 0xffffffffl) + " to " + (ssrcTarget & 0xffffffffl));
         }
 
@@ -438,8 +384,8 @@ public class SsrcRewritingEngine implements TransformEngine
             if (refCount == null)
             {
                 // Create an <tt>SsrcGroupRewriter</tt> for the target SSRC.
-                refCount
-                    = new RefCount<>(new SsrcGroupRewriter(this, ssrcTarget));
+                refCount = new RefCount<>(
+                    seqnumBaseKeeper.createSsrcGroupRewriter(this, ssrcTarget));
                 target2rewriter.put(ssrcTarget, refCount);
             }
 
@@ -503,7 +449,7 @@ public class SsrcRewritingEngine implements TransformEngine
 
         if (activeRewriter == null)
         {
-            logDebug(
+            logger.debug(
                     "Could not find an SsrcRewriter for the RTCP packet type: ");
             return INVALID_SSRC;
         }
@@ -544,6 +490,7 @@ public class SsrcRewritingEngine implements TransformEngine
                 return pkt;
             }
 
+            seqnumBaseKeeper.update(pkt);
             if (!initialized)
             {
                 return pkt;
@@ -607,7 +554,7 @@ public class SsrcRewritingEngine implements TransformEngine
             }
             catch (BadFormatException e)
             {
-                logError(
+                logger.error(
                         "Failed to rewrite an RTCP packet. Passing through.",
                         e);
                 return pkt;
@@ -615,7 +562,7 @@ public class SsrcRewritingEngine implements TransformEngine
 
             if (inPkts == null || inPkts.length == 0)
             {
-                logWarn("Weird, it seems we just received an empty RTCP " +
+                logger.warn("Weird, it seems we just received an empty RTCP " +
                         "packet.");
                 return pkt;
             }
@@ -671,7 +618,7 @@ public class SsrcRewritingEngine implements TransformEngine
                         if (reverseSSRC == INVALID_SSRC)
                         {
                             // We only really care if it's NOT a REMB.
-                            logDebug(
+                            logger.debug(
                                     "Could not find an SsrcGroupRewriter for"
                                         + " the RTCP packet: " + psfb);
                         }
@@ -695,7 +642,7 @@ public class SsrcRewritingEngine implements TransformEngine
                                     = reverseRewriteSSRC((int) dest[i]);
                                 if (reverseSSRC == INVALID_SSRC)
                                 {
-                                    logDebug(
+                                    logger.debug(
                                             "Could not find an"
                                                 + " SsrcGroupRewriter for the"
                                                 + " RTCP packet: " + psfb);
@@ -718,7 +665,7 @@ public class SsrcRewritingEngine implements TransformEngine
                     RTCPFBPacket fb = (RTCPFBPacket) inPkt;
                     if (fb.fmt != NACKPacket.FMT)
                     {
-                        logWarn("Unhandled RTCP RTPFB packet (not a NACK): "
+                        logger.warn("Unhandled RTCP RTPFB packet (not a NACK): "
                                 + inPkt);
                     }
                     else
@@ -727,7 +674,7 @@ public class SsrcRewritingEngine implements TransformEngine
                     }
                     break;
                 default:
-                    logWarn("Unhandled RTCP (non RTPFB PSFB) packet: " + inPkt);
+                    logger.warn("Unhandled RTCP (non RTPFB PSFB) packet: " + inPkt);
                     break;
                 }
             }
@@ -751,5 +698,72 @@ public class SsrcRewritingEngine implements TransformEngine
         // of requiring RTCP termination even in the simple case of 1-1 calls
         // but then again, in this case we don't need simulcast (but we do need
         // SSRC collision detection and conflict resolution).
+    }
+
+    /**
+     * This class holds the most recent outbound sequence number of the
+     * associated <tt>MediaStream</tt>.
+     *
+     * FIXME We can get this information from FMJ. There's absolutely no need
+     * for this class, but getting the information from FMJ needs some testing
+     * first. This is a temporary fix.
+     */
+    static class SeqnumBaseKeeper
+    {
+        /**
+         * The <tt>Map</tt> that holds the latest and greatest sequence number
+         * for a given SSRC.
+         */
+        private Map<Integer, Integer> map = new HashMap<Integer, Integer>();
+
+        /**
+         * The <tt>Comparator</tt> used to compare sequence numbers.
+         */
+        private static SeqNumComparator seqNumComparator
+            = new SeqNumComparator();
+
+        /**
+         *
+         * @param pkt
+         */
+        public synchronized void update(RawPacket pkt)
+        {
+            int ssrc = pkt.getSSRC();
+            int seqnum = pkt.getSequenceNumber();
+            if (map.containsKey(ssrc))
+            {
+                int oldSeqnum = map.get(ssrc);
+                if (seqNumComparator.compare(seqnum, oldSeqnum) == 1)
+                {
+                    map.put(ssrc, seqnum);
+                }
+            }
+            else
+            {
+                map.put(ssrc, seqnum);
+            }
+        }
+
+        /**
+         *
+         * @param ssrcRewritingEngine
+         * @param ssrcTarget
+         * @return
+         */
+        public synchronized SsrcGroupRewriter createSsrcGroupRewriter(
+            SsrcRewritingEngine ssrcRewritingEngine, Integer ssrcTarget)
+        {
+            int seqnum;
+            if (map.containsKey(ssrcTarget))
+            {
+                seqnum = map.get(ssrcTarget) + 1;
+            }
+            else
+            {
+                seqnum = RANDOM.nextInt(0x10000);
+            }
+
+            return new SsrcGroupRewriter(ssrcRewritingEngine, ssrcTarget, seqnum);
+        }
     }
 }

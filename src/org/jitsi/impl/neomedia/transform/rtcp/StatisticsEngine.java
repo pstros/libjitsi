@@ -22,7 +22,6 @@ import javax.media.control.*;
 import javax.media.rtp.*;
 
 import net.sf.fmj.media.rtp.*;
-import net.sf.fmj.media.rtp.RTPHeader; //disambiguation
 import net.sf.fmj.media.rtp.util.*;
 import net.sf.fmj.utility.*;
 
@@ -90,7 +89,8 @@ public class StatisticsEngine
 
             if (v == RTCPHeader.VERSION)
             {
-                int words = (buf[off + 2] << 8) + (buf[off + 3] << 0);
+                int words = ((buf[off + 2] & 0xff) << 8) |
+                            ((buf[off + 3] & 0xff));
                 int bytes = (words + 1) * 4;
 
                 if (bytes <= len)
@@ -181,21 +181,21 @@ public class StatisticsEngine
      * packets.
      */
     private final PacketTransformer rtpTransformer
-            = new SinglePacketTransformer()
+            = new SinglePacketTransformer(RTPPacketPredicate.instance)
     {
         @Override
         public RawPacket transform(RawPacket pkt)
         {
-            if (pkt != null && pkt.getVersion() == RTPHeader.VERSION)
-                StatisticsEngine.this.rtpPacketsSent++;
+            StatisticsEngine.this.rtpPacketsSent++;
+
             return pkt;
         }
 
         @Override
         public RawPacket reverseTransform(RawPacket pkt)
         {
-            if (pkt != null && pkt.getVersion() == RTPHeader.VERSION)
-                StatisticsEngine.this.rtpPacketsReceived++;
+            StatisticsEngine.this.rtpPacketsReceived++;
+
             return pkt;
         }
     };
@@ -206,6 +206,9 @@ public class StatisticsEngine
      */
     public StatisticsEngine(MediaStreamImpl stream)
     {
+        // XXX think about removing the isRTCP method now that we have the
+        // RTCPPacketPredicate in place.
+        super(RTCPPacketPredicate.instance);
         this.mediaStream = stream;
 
         mediaType = this.mediaStream.getMediaType();
@@ -594,12 +597,12 @@ public class StatisticsEngine
         }
 
         // round trip delay
-        if (receiveStream instanceof RecvSSRCInfo)
+        int rtt = (int) mediaStream.getMediaStreamStats().getRttMs();
+        if (rtt >= 0)
         {
-            voipMetrics.setRoundTripDelay(
-                    ((RecvSSRCInfo) receiveStream).getRoundTripDelay(
-                            senderSSRC));
+            voipMetrics.setRoundTripDelay(rtt);
         }
+
         // end system delay
         /*
          * Defined as the sum of the total sample accumulation and encoding

@@ -874,10 +874,9 @@ public class BasicRTCPTerminationStrategy
 
             // Set the NTP timestamp for this SR.
             long estimatedRemoteTime = estimate.getRemoteTime();
-            long secs = estimatedRemoteTime / 1000L;
-            double fraction = (estimatedRemoteTime - secs * 1000L) / 1000D;
-            sr.ntptimestamplsw = (int) (fraction * 4294967296D);
-            sr.ntptimestampmsw = secs;
+            long ntpTime = TimeUtils.toNtpTime(estimatedRemoteTime);
+            sr.ntptimestampmsw = TimeUtils.getMsw(ntpTime);
+            sr.ntptimestamplsw = TimeUtils.getLsw(ntpTime);
 
             // Set the RTP timestamp.
             sr.rtptimestamp = estimate.getRtpTimestamp();
@@ -976,6 +975,15 @@ public class BasicRTCPTerminationStrategy
 
         return new RTCPSDESPacket(chunks.toArray(new RTCPSDES[chunks.size()]));
     }
+
+    /**
+     * @return the {@link RemoteClockEstimator} of this instance.
+     */
+    public RemoteClockEstimator getRemoteClockEstimator()
+    {
+        return remoteClockEstimator;
+    }
+
 
     /**
      * The garbage collector runs at each reporting interval and cleans up
