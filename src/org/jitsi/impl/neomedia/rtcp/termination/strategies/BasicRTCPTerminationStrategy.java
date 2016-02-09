@@ -56,6 +56,11 @@ public class BasicRTCPTerminationStrategy
     private static final int MAX_RTCP_REPORT_BLOCKS = 31;
 
     /**
+     * The maximuc number of SDES chunks that an SDES packet can have.
+     */
+    private static final int MAX_SDES_CHUNKS = 31;
+
+    /**
      * The minimum number of RTCP report blocks that an RR or an SR can
      * contain.
      */
@@ -136,7 +141,7 @@ public class BasicRTCPTerminationStrategy
      * <tt>BasicRTCPTerminationStrategy</tt>.
      */
     private final PacketTransformer rtpTransformer
-        = new SinglePacketTransformer(RTPPacketPredicate.instance)
+        = new SinglePacketTransformer(RTPPacketPredicate.INSTANCE)
     {
         /**
          * {@inheritDoc}
@@ -168,7 +173,7 @@ public class BasicRTCPTerminationStrategy
      * <tt>BasicRTCPTerminationStrategy</tt>.
      */
     private final PacketTransformer rtcpTransformer
-        = new SinglePacketTransformerAdapter(RTCPPacketPredicate.instance)
+        = new SinglePacketTransformerAdapter(RTCPPacketPredicate.INSTANCE)
     {
         /**
          * {@inheritDoc}
@@ -276,7 +281,7 @@ public class BasicRTCPTerminationStrategy
         RTCPREMBPacket remb = makeREMB();
 
         // SDES
-        RTCPSDESPacket sdes = makeSDES();
+        List<RTCPSDESPacket> sdes = makeSDES();
 
         // Build the RTCPCompoundPackets to return.
         List<RTCPCompoundPacket> compounds = compound(rrs, srs, sdes, remb);
@@ -305,7 +310,7 @@ public class BasicRTCPTerminationStrategy
      *
      * @param rrs
      * @param srs
-     * @param sdes the {@code RTCPSDESPacket} to include in the new
+     * @param sdess the {@code RTCPSDESPacket} to include in the new
      * {@code RTCPCompoundPacket}. An SDES packet containing a CNAME item MUST
      * be included in each compound RTCP packet.
      * @param others other {@code RTCPPacket}s to be included in the new
@@ -316,7 +321,7 @@ public class BasicRTCPTerminationStrategy
     private List<RTCPCompoundPacket> compound(
             List<RTCPRRPacket> rrs,
             List<RTCPSRPacket> srs,
-            RTCPSDESPacket sdes,
+            List<RTCPSDESPacket> sdess,
             RTCPPacket... others)
     {
         // SRs are capable of carrying the report blocks of the RRs and thus of
@@ -376,16 +381,23 @@ public class BasicRTCPTerminationStrategy
                 }
             }
 
-            // SDES with CNAME for the SSRC of the SR or RR.
-            RTCPSDESItem cnameItem = findCNAMEItem(sdes, ssrc);
-
-            if (cnameItem != null)
+            if (sdess != null && sdess.size() != 0)
             {
-                RTCPSDES sdesOfReport = new RTCPSDES();
+                for (RTCPSDESPacket sdes : sdess)
+                {
+                    // SDES with CNAME for the SSRC of the SR or RR.
+                    RTCPSDESItem cnameItem = findCNAMEItem(sdes, ssrc);
 
-                sdesOfReport.items = new RTCPSDESItem[] { cnameItem };
-                sdesOfReport.ssrc = ssrc;
-                rtcps.add(new RTCPSDESPacket(new RTCPSDES[] { sdesOfReport }));
+                    if (cnameItem != null)
+                    {
+                        RTCPSDES sdesOfReport = new RTCPSDES();
+
+                        sdesOfReport.items = new RTCPSDESItem[] { cnameItem };
+                        sdesOfReport.ssrc = ssrc;
+                        rtcps.add(new RTCPSDESPacket(new RTCPSDES[] { sdesOfReport }));
+                        break;
+                    }
+                }
             }
 
             RTCPCompoundPacket compound
@@ -832,6 +844,13 @@ public class BasicRTCPTerminationStrategy
         // Exp & mantissa
         long bitrate = remoteBitrateEstimator.getLatestEstimate();
 
+        if (logger.isDebugEnabled())
+        {
+            logger.debug(
+                    "Estimated bitrate (bps): " + bitrate + ", dest: "
+                        + Arrays.toString(dest) + ", time (ms): "
+                        + System.currentTimeMillis());
+        }
         if (bitrate == -1)
         {
             return null;
@@ -898,7 +917,7 @@ public class BasicRTCPTerminationStrategy
      * @return a <tt>List</tt> of <tt>RTCPSDES</tt> packets for all the RTP
      * streams that we're sending.
      */
-    private RTCPSDESPacket makeSDES()
+    private List<RTCPSDESPacket> makeSDES()
     {
         // Create an SDES for our own SSRC.
         SSRCInfo ourinfo
@@ -960,8 +979,20 @@ public class BasicRTCPTerminationStrategy
 
         chunks.add(ownSDES);
 
-        for (Map.Entry<Integer, byte[]> entry : cnameRegistry.entrySet())
+        Set<Map.Entry<Integer, byte[]>> entries = cnameRegistry.entrySet();
+        List<RTCPSDESPacket> sdesPackets = new ArrayList<>(
+            (int) Math.ceil((double) entries.size() / MAX_SDES_CHUNKS));
+
+        for (Map.Entry<Integer, byte[]> entry : entries)
         {
+            if (chunks.size() >= MAX_SDES_CHUNKS)
+            {
+                // RTCP SDES packets can have a maximum of 31 SDES chunks.
+                sdesPackets.add(new RTCPSDESPacket(
+                        chunks.toArray(new RTCPSDES[chunks.size()])));
+                chunks = new ArrayList<>();
+            }
+
             RTCPSDES sdes = new RTCPSDES();
 
             sdes.items
@@ -973,7 +1004,14 @@ public class BasicRTCPTerminationStrategy
             chunks.add(sdes);
         }
 
-        return new RTCPSDESPacket(chunks.toArray(new RTCPSDES[chunks.size()]));
+        if (chunks.size() > 0)
+        {
+            // Add the remaining chunks in a new SDES packet.
+            sdesPackets.add(new RTCPSDESPacket(
+                    chunks.toArray(new RTCPSDES[chunks.size()])));
+        }
+
+        return sdesPackets;
     }
 
     /**
@@ -1022,19 +1060,21 @@ public class BasicRTCPTerminationStrategy
          */
         public RawPacket gateway(RTCPCompoundPacket inPacket)
         {
+            RTCPPacket[] inPackets;
+
             if (inPacket == null
-                || inPacket.packets == null || inPacket.packets.length == 0)
+                    || (inPackets = inPacket.packets) == null
+                    || inPackets.length == 0)
             {
                 logger.info("Ignoring empty RTCP packet.");
                 return null;
             }
 
-            List<RTCPPacket> outPackets
-                = new ArrayList<>(inPacket.packets.length);
+            List<RTCPPacket> outPackets = new ArrayList<>(inPackets.length);
 
-            for (RTCPPacket p : inPacket.packets)
+            for (RTCPPacket rtcp : inPackets)
             {
-                switch (p.type)
+                switch (rtcp.type)
                 {
                 case RTCPPacket.RR:
                 case RTCPPacket.SR:
@@ -1043,22 +1083,21 @@ public class BasicRTCPTerminationStrategy
                     // forward NACKs/PLIs/etc.
                     break;
                 case RTCPFBPacket.PSFB:
-                    RTCPFBPacket psfb = (RTCPFBPacket) p;
+                    RTCPFBPacket psfb = (RTCPFBPacket) rtcp;
                     switch (psfb.fmt)
                     {
-                        case RTCPREMBPacket.FMT:
-                            // We generate its own REMB packets.
-                            break;
-                        default:
-                            // We let through everything else, like NACK
-                            // packets.
-                            outPackets.add(psfb);
-                            break;
+                    case RTCPREMBPacket.FMT:
+                        // We generate its own REMB packets.
+                        break;
+                    default:
+                        // We let through everything else, like NACK packets.
+                        outPackets.add(psfb);
+                        break;
                     }
                     break;
                 default:
                     // We let through everything else, like BYE and APP packets.
-                    outPackets.add(p);
+                    outPackets.add(rtcp);
                     break;
                 }
             }
