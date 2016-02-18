@@ -17,6 +17,7 @@ package org.jitsi.impl.neomedia.transform.dtls;
 
 import java.io.*;
 import java.security.*;
+import java.util.*;
 
 import org.bouncycastle.crypto.tls.*;
 import org.ice4j.ice.*;
@@ -35,8 +36,15 @@ import org.jitsi.util.*;
  * @author Lyubomir Marinov
  */
 public class DtlsPacketTransformer
-    extends SinglePacketTransformer
+    implements PacketTransformer
 {
+    /**
+     * The interval in milliseconds between successive tries to await successful
+     * connections in
+     * {@link #runInConnectThread(DTLSProtocol, TlsPeer, DatagramTransport)}.
+     *
+     * @see #CONNECT_TRIES
+     */
     private static final long CONNECT_RETRY_INTERVAL = 500;
 
     /**
@@ -46,6 +54,8 @@ public class DtlsPacketTransformer
      * {@link DTLSClientProtocol#connect(TlsClient, DatagramTransport)} and
      * {@link DTLSServerProtocol#accept(TlsServer, DatagramTransport)} in
      * anticipation of a successful connection.
+     *
+     * @see #CONNECT_RETRY_INTERVAL
      */
     private static final int CONNECT_TRIES = 3;
 
@@ -85,26 +95,21 @@ public class DtlsPacketTransformer
     private static final Logger logger
         = Logger.getLogger(DtlsPacketTransformer.class);
 
+    /**
+     * The maximum number of elements of queues such as
+     * {@link #_reverseTransformSrtpQueue} and {@link #_transformSrtpQueue}.
+     * Defined in order to reduce excessive memory use (which may lead to
+     * {@link OutOfMemoryError}s, for example).
+     */
+    private static final int TRANSFORM_QUEUE_CAPACITY
+        = RTPConnectorOutputStream.PACKET_QUEUE_CAPACITY;
+
     static
     {
         ConfigurationService cfg = LibJitsi.getConfigurationService();
-        boolean dropUnencryptedPkts = false;
 
-        if (cfg == null)
-        {
-            String s = System.getProperty(DROP_UNENCRYPTED_PKTS_PNAME);
-
-            if (s != null)
-                dropUnencryptedPkts = Boolean.parseBoolean(s);
-        }
-        else
-        {
-            dropUnencryptedPkts
-                = cfg.getBoolean(
-                        DROP_UNENCRYPTED_PKTS_PNAME,
-                        dropUnencryptedPkts);
-        }
-        DROP_UNENCRYPTED_PKTS = dropUnencryptedPkts;
+        DROP_UNENCRYPTED_PKTS
+            = ConfigUtils.getBoolean(cfg, DROP_UNENCRYPTED_PKTS_PNAME, false);
     }
 
     /**
@@ -137,14 +142,14 @@ public class DtlsPacketTransformer
                 int minor = buf[off + 2] & 0xff;
                 ProtocolVersion version = null;
 
-                if ((major == ProtocolVersion.DTLSv10.getMajorVersion())
-                        && (minor == ProtocolVersion.DTLSv10.getMinorVersion()))
+                if (major == ProtocolVersion.DTLSv10.getMajorVersion()
+                        && minor == ProtocolVersion.DTLSv10.getMinorVersion())
                 {
                     version = ProtocolVersion.DTLSv10;
                 }
-                if ((version == null)
-                        && (major == ProtocolVersion.DTLSv12.getMajorVersion())
-                        && (minor == ProtocolVersion.DTLSv12.getMinorVersion()))
+                if (version == null
+                        && major == ProtocolVersion.DTLSv12.getMajorVersion()
+                        && minor == ProtocolVersion.DTLSv12.getMinorVersion())
                 {
                     version = ProtocolVersion.DTLSv12;
                 }
@@ -201,6 +206,13 @@ public class DtlsPacketTransformer
     private MediaType mediaType;
 
     /**
+     * The {@code Queue} of SRTP {@code RawPacket}s which were received from the
+     * remote while {@link #_srtpTransformer} was unavailable i.e. {@code null}.
+     */
+    private final Queue<RawPacket> _reverseTransformSrtpQueue
+        = new LinkedList<>();
+
+    /**
      * Whether rtcp-mux is in use.
      *
      * If enabled, and this is the transformer for RTCP, it will not establish
@@ -229,6 +241,12 @@ public class DtlsPacketTransformer
      * the remote DTLS peer has closed the write side of the connection.
      */
     private boolean tlsPeerHasRaisedCloseNotifyWarning;
+
+    /**
+     * The {@code Queue} of SRTP {@code RawPacket}s which were to be sent to the
+     * remote while {@link #_srtpTransformer} was unavailable i.e. {@code null}.
+     */
+    private final Queue<RawPacket> _transformSrtpQueue = new LinkedList<>();
 
     /**
      * The <tt>TransformEngine</tt> which has initialized this instance.
@@ -352,6 +370,61 @@ public class DtlsPacketTransformer
     }
 
     /**
+     * Gets the {@code SRTPTransformer} (to be) used by this instance.
+     *
+     * @return the {@code SRTPTransformer} (to be) used by this instance
+     */
+    private SinglePacketTransformer getSRTPTransformer()
+    {
+        SinglePacketTransformer srtpTransformer = _srtpTransformer;
+
+        if (srtpTransformer != null)
+            return srtpTransformer;
+
+        if (rtcpmux && Component.RTCP == componentID)
+            return initializeSRTCPTransformerFromRtp();
+
+        // XXX It is our explicit policy to rely on the SrtpListener to notify
+        // the user that the session is not secure. Unfortunately, (1) the
+        // SrtpListener is not supported by this DTLS SrtpControl implementation
+        // and (2) encrypted packets may arrive soon enough to be let through
+        // while _srtpTransformer is still initializing. Consequently, we may
+        // wait for _srtpTransformer (a bit) to initialize.
+        boolean yield = true;
+
+        do
+        {
+            synchronized (this)
+            {
+                srtpTransformer = _srtpTransformer;
+                if (srtpTransformer != null)
+                    break; // _srtpTransformer is initialized
+
+                if (connectThread == null)
+                {
+                    // Though _srtpTransformer is NOT initialized, there is no
+                    // point in waiting because there is no one to initialize
+                    // it.
+                    break;
+                }
+            }
+
+            if (yield)
+            {
+                yield = false;
+                Thread.yield();
+            }
+            else
+            {
+                break;
+            }
+        }
+        while (true);
+
+        return srtpTransformer;
+    }
+
+    /**
      * Gets the <tt>TransformEngine</tt> which has initialized this instance.
      *
      * @return the <tt>TransformEngine</tt> which has initialized this instance
@@ -423,7 +496,9 @@ public class DtlsPacketTransformer
 
     /**
      * Tries to initialize {@link #_srtpTransformer} by using the
-     * <tt>DtlsPacketTransformer</tt> for RTP.
+     * {@code DtlsPacketTransformer} for RTP. (The method invocations should be
+     * on the {@code DtlsPacketTransformer} for RTCP as the method name
+     * suggests.)
      *
      * @return the (possibly updated) value of {@link #_srtpTransformer}.
      */
@@ -436,7 +511,7 @@ public class DtlsPacketTransformer
         if (rtpTransformer != this)
         {
             PacketTransformer srtpTransformer
-                = rtpTransformer.waitInitializeAndGetSRTPTransformer();
+                = rtpTransformer.getSRTPTransformer();
 
             if (srtpTransformer != null
                     && srtpTransformer instanceof SRTPTransformer)
@@ -633,6 +708,14 @@ public class DtlsPacketTransformer
         return srtpTransformer;
     }
 
+    private synchronized void maybeStart()
+    {
+        if (this.mediaType != null && this.connector != null && !started)
+        {
+            start();
+        }
+    }
+
     /**
      * Notifies this instance that the DTLS record layer associated with a
      * specific <tt>TlsPeer</tt> has raised an alert.
@@ -661,136 +744,163 @@ public class DtlsPacketTransformer
     }
 
     /**
+     * Queues {@code RawPacket}s to be supplied to
+     * {@link #transformSrtp(SinglePacketTransformer, Collection, boolean, List)}
+     * when {@link #_srtpTransformer} becomes available.
+     *
+     * @param pkts the {@code RawPacket}s to queue
+     * @param transform {@code true} if {@code pkts} are to be sent to the
+     * remote peer or {@code false} if {@code pkts} were received from the
+     * remote peer
+     */
+    private void queueTransformSrtp(RawPacket[] pkts, boolean transform)
+    {
+        if (pkts != null)
+        {
+            Queue<RawPacket> q
+                = transform ? _transformSrtpQueue : _reverseTransformSrtpQueue;
+
+            synchronized (q)
+            {
+                for (RawPacket pkt : pkts)
+                {
+                    if (pkt != null)
+                    {
+                        while (q.size() >= TRANSFORM_QUEUE_CAPACITY
+                                && q.poll() != null);
+
+                        q.add(pkt);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * {@inheritDoc}
      */
     @Override
-    public RawPacket reverseTransform(RawPacket pkt)
+    public RawPacket[] reverseTransform(RawPacket[] pkts)
     {
-        byte[] buf = pkt.getBuffer();
-        int off = pkt.getOffset();
-        int len = pkt.getLength();
+        return transform(pkts, /* transform */ false);
+    }
 
-        if (isDtlsRecord(buf, off, len))
+    /**
+     * Processes a DTLS {@code RawPacket} received from the remote peer.
+     *
+     * @param pkt the DTLS {@code RawPacket} received from the remote peer to
+     * process
+     * @param buf the {@code buffer} of {@code pkt}. Provided explicitly because
+     * it has been retrieved already.
+     * @param off the offset in {@code buf} at which the DTLS packet begins.
+     * Provided explicitly because it has been retrieved already.
+     * @param len the length in {@code byte}s of the DTLS packet in {@code buf}.
+     * Provided explicitly because it has been retrieved already.
+     * @return the processed DTLS {@code RawPacket} received from the remote
+     * peer. If {@code pkt} was completely consumed for the purposes of setting
+     * the DTLS session with the remote peer up, returns {@code null}. However,
+     * {@code null} may be returned if the processing of {@code pkt} failed.
+     */
+    private RawPacket reverseTransformDtls(
+            RawPacket pkt,
+            byte[] buf, int off, int len)
+    {
+        if (rtcpmux && Component.RTCP == componentID)
         {
-            if (rtcpmux && Component.RTCP == componentID)
+            // This should never happen.
+            logger.warn(
+                    "Dropping a DTLS record, because it was received on the"
+                        + " RTCP channel while rtcpmux is in use.");
+            return null;
+        }
+
+        boolean receive;
+
+        synchronized (this)
+        {
+            if (datagramTransport == null)
             {
-                // This should never happen.
-                logger.warn(
-                        "Dropping a DTLS record, because it was received on the"
-                            + " RTCP channel while rtcpmux is in use.");
-                return null;
-            }
-
-            boolean receive;
-
-            synchronized (this)
-            {
-                if (datagramTransport == null)
-                {
-                    receive = false;
-                }
-                else
-                {
-                    datagramTransport.queueReceive(buf, off, len);
-                    receive = true;
-                }
-            }
-            if (receive)
-            {
-                DTLSTransport dtlsTransport = this.dtlsTransport;
-
-                if (dtlsTransport == null)
-                {
-                    // The specified pkt looks like a DTLS record and it has
-                    // been consumed for the purposes of the secure channel
-                    // represented by this PacketTransformer.
-                    pkt = null;
-                }
-                else
-                {
-                    try
-                    {
-                        int receiveLimit = dtlsTransport.getReceiveLimit();
-                        int delta = receiveLimit - len;
-
-                        if (delta > 0)
-                        {
-                            pkt.grow(delta);
-                            buf = pkt.getBuffer();
-                            off = pkt.getOffset();
-                            len = pkt.getLength();
-                        }
-                        else if (delta < 0)
-                        {
-                            pkt.shrink(-delta);
-                            buf = pkt.getBuffer();
-                            off = pkt.getOffset();
-                            len = pkt.getLength();
-                        }
-
-                        int received
-                            = dtlsTransport.receive(
-                                buf, off, len,
-                                DTLS_TRANSPORT_RECEIVE_WAITMILLIS);
-
-                        if (received <= 0)
-                        {
-                            // No application data was decoded.
-                            pkt = null;
-                        }
-                        else
-                        {
-                            delta = len - received;
-                            if (delta > 0)
-                                pkt.shrink(delta);
-                        }
-                    }
-                    catch (IOException ioe)
-                    {
-                        pkt = null;
-                        // SrtpControl.start(MediaType) starts its associated
-                        // TransformEngine. We will use that mediaType to signal
-                        // the normal stop then as well i.e. we will ignore
-                        // exception after the procedure to stop this
-                        // PacketTransformer has begun.
-                        if (mediaType != null
-                                && !tlsPeerHasRaisedCloseNotifyWarning)
-                        {
-                            logger.error(
-                                    "Failed to decode a DTLS record!",
-                                    ioe);
-                        }
-                    }
-                }
+                receive = false;
             }
             else
             {
-                // The specified pkt looks like a DTLS record but it is
-                // unexpected in the current state of the secure channel
-                // represented by this PacketTransformer. This PacketTransformer
-                // has not been started (successfully) or has been closed.
-                pkt = null;
+                datagramTransport.queueReceive(buf, off, len);
+                receive = true;
             }
         }
-        else if (transformEngine.isSrtpDisabled())
+        if (receive)
         {
-            // In pure DTLS mode only DTLS records pass through.
-            pkt = null;
+            DTLSTransport dtlsTransport = this.dtlsTransport;
+
+            if (dtlsTransport == null)
+            {
+                // The specified pkt looks like a DTLS record and it has been
+                // consumed for the purposes of the secure channel represented
+                // by this PacketTransformer.
+                pkt = null;
+            }
+            else
+            {
+                try
+                {
+                    int receiveLimit = dtlsTransport.getReceiveLimit();
+                    int delta = receiveLimit - len;
+
+                    if (delta > 0)
+                    {
+                        pkt.grow(delta);
+                        buf = pkt.getBuffer();
+                        off = pkt.getOffset();
+                        len = pkt.getLength();
+                    }
+                    else if (delta < 0)
+                    {
+                        pkt.shrink(-delta);
+                        buf = pkt.getBuffer();
+                        off = pkt.getOffset();
+                        len = pkt.getLength();
+                    }
+
+                    int received
+                        = dtlsTransport.receive(
+                                buf, off, len,
+                                DTLS_TRANSPORT_RECEIVE_WAITMILLIS);
+
+                    if (received <= 0)
+                    {
+                        // No application data was decoded.
+                        pkt = null;
+                    }
+                    else
+                    {
+                        delta = len - received;
+                        if (delta > 0)
+                            pkt.shrink(delta);
+                    }
+                }
+                catch (IOException ioe)
+                {
+                    pkt = null;
+                    // SrtpControl.start(MediaType) starts its associated
+                    // TransformEngine. We will use that mediaType to signal the
+                    // normal stop then as well i.e. we will ignore exception
+                    // after the procedure to stop this PacketTransformer
+                    // has begun.
+                    if (mediaType != null
+                            && !tlsPeerHasRaisedCloseNotifyWarning)
+                    {
+                        logger.error("Failed to decode a DTLS record!", ioe);
+                    }
+                }
+            }
         }
         else
         {
-            // DTLS-SRTP has not been initialized yet or has failed to
-            // initialize.
-            SinglePacketTransformer srtpTransformer
-                = waitInitializeAndGetSRTPTransformer();
-
-            if (srtpTransformer != null)
-                pkt = srtpTransformer.reverseTransform(pkt);
-            else if (DROP_UNENCRYPTED_PKTS)
-                pkt = null;
-            // XXX Else, it is our explicit policy to let the received packet
-            // pass through and rely on the SrtpListener to notify the user that
-            // the session is not secured.
+            // The specified pkt looks like a DTLS record but it is unexpected
+            // in the current state of the secure channel represented by this
+            // PacketTransformer. This PacketTransformer has not been started
+            // (successfully) or has been closed.
+            pkt = null;
         }
         return pkt;
     }
@@ -1001,14 +1111,6 @@ public class DtlsPacketTransformer
         }
     }
 
-    private synchronized void maybeStart()
-    {
-        if (this.mediaType != null && this.connector != null && !started)
-        {
-            start();
-        }
-    }
-
     /**
      * Enables/disables rtcp-mux.
      * @param rtcpmux whether to enable or disable.
@@ -1189,112 +1291,275 @@ public class DtlsPacketTransformer
      * {@inheritDoc}
      */
     @Override
-    public RawPacket transform(RawPacket pkt)
+    public RawPacket[] transform(RawPacket[] pkts)
     {
-        byte[] buf = pkt.getBuffer();
-        int off = pkt.getOffset();
-        int len = pkt.getLength();
-
-        // If the specified pkt represents a DTLS record, then it should pass
-        // through this PacketTransformer (e.g. it has been sent through
-        // DatagramTransportImpl).
-        if (isDtlsRecord(buf, off, len))
-            return pkt;
-
-        // SRTP
-        if (!transformEngine.isSrtpDisabled())
-        {
-            // DTLS-SRTP has not been initialized yet or has failed to
-            // initialize.
-            SinglePacketTransformer srtpTransformer
-                = waitInitializeAndGetSRTPTransformer();
-
-            if (srtpTransformer != null)
-                pkt = srtpTransformer.transform(pkt);
-            else if (DROP_UNENCRYPTED_PKTS)
-                pkt = null;
-            // XXX Else, it is our explicit policy to let the received packet
-            // pass through and rely on the SrtpListener to notify the user that
-            // the session is not secured.
-        }
-        // Pure/non-SRTP DTLS
-        else
-        {
-            // The specified pkt will pass through this PacketTransformer only
-            // if it gets transformed into a DTLS record.
-            pkt = null;
-
-            sendApplicationData(buf, off, len);
-        }
-        return pkt;
+        return transform(pkts, /* transform */ true);
     }
 
     /**
-     * Gets the {@code SRTPTransformer} used by this instance. If
-     * {@link #_srtpTransformer} does not exist (yet) and the state of this
-     * instance indicates that its initialization is in progess, then blocks
-     * until {@code _srtpTransformer} is initialized and returns it.
+     * Processes {@code RawPacket}s to be sent to or received from (depending on
+     * {@code transform}) the remote peer.
      *
-     * @return the {@code SRTPTransformer} used by this instance
+     * @param inPkts the {@code RawPacket}s to be sent to or received from
+     * (depending on {@code transform} the remote peer
+     * @param transform {@code true} of {@code inPkts} are to be sent to the
+     * remote peer or {@code false} if {@code inPkts} have been received from
+     * the remote peer
+     * @return the {@code RawPacket}s which are the result of the processing
      */
-    private SinglePacketTransformer waitInitializeAndGetSRTPTransformer()
+    private RawPacket[] transform(RawPacket[] inPkts, boolean transform)
     {
-        SinglePacketTransformer srtpTransformer = _srtpTransformer;
+        List<RawPacket> outPkts = new ArrayList<>();
 
-        if (srtpTransformer != null)
-            return srtpTransformer;
+        // DTLS and SRTP packets are distinct, separate (in DTLS-SRTP).
+        // Additionally, the UDP transport does not guarantee the packet send
+        // order. Consequently, it should be fine to process DTLS packets first.
+        outPkts = transformDtls(inPkts, transform, outPkts);
 
-        if (rtcpmux && Component.RTCP == componentID)
-            return initializeSRTCPTransformerFromRtp();
+        outPkts = transformNonDtls(inPkts, transform, outPkts);
 
-        // XXX It is our explicit policy to rely on the SrtpListener to notify
-        // the user that the session is not secure. Unfortunately, (1) the
-        // SrtpListener is not supported by this DTLS SrtpControl implementation
-        // and (2) encrypted packets may arrive soon enough to be let through
-        // while _srtpTransformer is still initializing. Consequently, we will
-        // block and wait for _srtpTransformer to initialize.
-        boolean interrupted = false;
+        return outPkts.toArray(new RawPacket[outPkts.size()]);
+    }
 
-        try
+    /**
+     * Processes DTLS {@code RawPacket}s to be sent to or received from
+     * (depending on {@code transform}) the remote peer. The implementation
+     * picks the elements of {@code inPkts} which look like DTLS records and
+     * replaces them with {@code null}.
+     *
+     * @param inPkts the {@code RawPacket}s to be sent to or received from
+     * (depending on {@code transform} the remote peer among which there may (or
+     * may not) be DTLS {@code RawPacket}s
+     * @param transform {@code true} of {@code inPkts} are to be sent to the
+     * remote peer or {@code false} if {@code inPkts} have been received from
+     * the remote peer
+     * @param outPkts the {@code List} of {@code RawPacket}s into which the
+     * results of the processing of the DTLS {@code RawPacket}s are to be
+     * written
+     * @return the {@code List} of {@code RawPacket}s which are the result of
+     * the processing including the elements of {@code outPkts}. Practically,
+     * {@code outPkts} itself.
+     */
+    private List<RawPacket> transformDtls(
+            RawPacket[] inPkts,
+            boolean transform,
+            List<RawPacket> outPkts)
+    {
+        if (inPkts != null)
         {
-            synchronized (this)
+            for (int i = 0; i < inPkts.length; ++i)
             {
-                do
+                RawPacket inPkt = inPkts[i];
+
+                if (inPkt == null)
+                    continue;
+
+                byte[] buf = inPkt.getBuffer();
+                int off = inPkt.getOffset();
+                int len = inPkt.getLength();
+
+                if (isDtlsRecord(buf, off, len))
                 {
-                    srtpTransformer = _srtpTransformer;
-                    if (srtpTransformer != null)
-                        break; // _srtpTransformer is initialized
+                    // In the outgoing/transform direction DTLS records pass
+                    // through (e.g. DatagramTransportImpl has sent them).
+                    RawPacket outPkt
+                        = transform
+                            ? inPkt
+                            : reverseTransformDtls(inPkt, buf, off, len);
 
-                    if (connectThread == null)
-                    {
-                        // Though _srtpTransformer is NOT initialized, there is
-                        // no point in waiting because there is no one to
-                        // initialize it.
-                        break;
-                    }
+                    // Whatever the outcome, inPkt has been consumed. The
+                    // following is being done because there may be a subsequent
+                    // iteration over inPkts later on.
+                    inPkts[i] = null;
 
-                    try
-                    {
-                        // It does not really matter (enough) how much we wait
-                        // here because we wait in a loop.
-                        long timeout = CONNECT_TRIES * CONNECT_RETRY_INTERVAL;
-
-                        wait(timeout);
-                    }
-                    catch (InterruptedException ie)
-                    {
-                        interrupted = true;
-                    }
+                    if (outPkt != null)
+                        outPkts.add(outPkt);
                 }
-                while (true);
             }
         }
-        finally
-        {
-            if (interrupted)
-                Thread.currentThread().interrupt();
-        }
+        return outPkts;
+    }
 
-        return srtpTransformer;
+    /**
+     * Processes non-DTLS {@code RawPacket}s to be sent to or received from
+     * (depending on {@code transform}) the remote peer. The implementation
+     * assumes that all elements of {@code inPkts} are non-DTLS
+     * {@code RawPacket}s.
+     *
+     * @param inPkts the {@code RawPacket}s to be sent to or received from
+     * (depending on {@code transform} the remote peer
+     * @param transform {@code true} of {@code inPkts} are to be sent to the
+     * remote peer or {@code false} if {@code inPkts} have been received from
+     * the remote peer
+     * @param outPkts the {@code List} of {@code RawPacket}s into which the
+     * results of the processing of {@code inPkts} are to be written
+     * @return the {@code List} of {@code RawPacket}s which are the result of
+     * the processing including the elements of {@code outPkts}. Practically,
+     * {@code outPkts} itself.
+     */
+    private List<RawPacket> transformNonDtls(
+            RawPacket[] inPkts,
+            boolean transform,
+            List<RawPacket> outPkts)
+    {
+        /* Pure/non-SRTP DTLS */ if (transformEngine.isSrtpDisabled())
+        {
+            // (1) In the incoming/reverseTransform direction, only DTLS records
+            // pass through.
+            // (2) In the outgoing/transform direction, the specified inPkts
+            // will pass through this PacketTransformer only if they get
+            // transformed into DTLS records.
+            if (transform)
+                outPkts = transformNonSrtp(inPkts, outPkts);
+        }
+        /* SRTP */ else
+        {
+            outPkts = transformSrtp(inPkts, transform, outPkts);
+        }
+        return outPkts;
+    }
+
+    /**
+     * Processes non-SRTP {@code RawPacket}s to be sent to the remote peer. The
+     * implementation assumes that all elements of {@code inPkts} are non-SRTP
+     * {@code RawPacket}s.
+     *
+     * @param inPkts the {@code RawPacket}s to be sent to the remote peer
+     * @param outPkts the {@code List} of {@code RawPacket}s into which the
+     * results of the processing of {@code inPkts} are to be written
+     * @return the {@code List} of {@code RawPacket}s which are the result of
+     * the processing including the elements of {@code outPkts}. Practically,
+     * {@code outPkts} itself. The implementation does not produce its own
+     * {@code RawPacket}s though because it merely wraps {@code inPkts} into
+     * DTLS application data.
+     */
+    private List<RawPacket> transformNonSrtp(
+            RawPacket[] inPkts,
+            List<RawPacket> outPkts)
+    {
+        if (inPkts != null)
+        {
+            for (RawPacket inPkt : inPkts)
+            {
+                if (inPkt == null)
+                    continue;
+
+                byte[] buf = inPkt.getBuffer();
+                int off = inPkt.getOffset();
+                int len = inPkt.getLength();
+
+                sendApplicationData(buf, off, len);
+            }
+        }
+        return outPkts;
+    }
+
+    /**
+     * Processes SRTP {@code RawPacket}s to be sent to or received from
+     * (depending on {@code transform}) the remote peer. The implementation
+     * assumes that all elements of {@code inPkts} are SRTP {@code RawPacket}s.
+     *
+     * @param inPkts the SRTP {@code RawPacket}s to be sent to or received from
+     * (depending on {@code transform}) the remote peer
+     * @param transform {@code true} of {@code inPkts} are to be sent to the
+     * remote peer or {@code false} if {@code inPkts} have been received from
+     * the remote peer
+     * @param outPkts the {@code List} of {@code RawPacket}s into which the
+     * results of the processing of {@code inPkts} are to be written
+     * @return the {@code List} of {@code RawPacket}s which are the result of
+     * the processing including the elements of {@code outPkts}. Practically,
+     * {@code outPkts} itself.
+     */
+    private List<RawPacket> transformSrtp(
+            RawPacket[] inPkts,
+            boolean transform,
+            List<RawPacket> outPkts)
+    {
+        SinglePacketTransformer srtpTransformer = getSRTPTransformer();
+
+        if (srtpTransformer == null)
+        {
+            // If unencrypted (SRTP) packets are to be dropped, they are dropped
+            // by not being processed here.
+            if (!DROP_UNENCRYPTED_PKTS)
+            {
+                queueTransformSrtp(inPkts, transform);
+            }
+        }
+        else
+        {
+            // Process the (SRTP) packets provided to earlier (method)
+            // invocations during which _srtpTransformer was unavailable.
+            Collection<RawPacket> q
+                = transform ? _transformSrtpQueue : _reverseTransformSrtpQueue;
+
+            synchronized (q)
+            {
+                try
+                {
+                    outPkts
+                        = transformSrtp(srtpTransformer, q, transform, outPkts);
+                }
+                finally
+                {
+                    // If a RawPacket from q causes an exception, do not attempt
+                    // to process it next time.
+                    q.clear();
+                }
+            }
+
+            // Process the (SRTP) packets provided to the current (method)
+            // invocation.
+            if (inPkts != null && inPkts.length != 0)
+            {
+                outPkts
+                    = transformSrtp(
+                            srtpTransformer,
+                            Arrays.asList(inPkts),
+                            transform,
+                            outPkts);
+            }
+        }
+        return outPkts;
+    }
+
+    /**
+     * Processes SRTP {@code RawPacket}s to be sent to or received from
+     * (depending on {@code transform}) the remote peer. The implementation
+     * assumes that all elements of {@code inPkts} are SRTP {@code RawPacket}s.
+     *
+     * @param srtpTransformer the {@code SinglePacketTransformer} to perform the
+     * actual processing
+     * @param inPkts the SRTP {@code RawPacket}s to be sent to or received from
+     * (depending on {@code transform}) the remote peer
+     * @param transform {@code true} of {@code inPkts} are to be sent to the
+     * remote peer or {@code false} if {@code inPkts} have been received from
+     * the remote peer
+     * @param outPkts the {@code List} of {@code RawPacket}s into which the
+     * results of the processing of {@code inPkts} are to be written
+     * @return the {@code List} of {@code RawPacket}s which are the result of
+     * the processing including the elements of {@code outPkts}. Practically,
+     * {@code outPkts} itself.
+     */
+    private List<RawPacket> transformSrtp(
+            SinglePacketTransformer srtpTransformer,
+            Collection<RawPacket> inPkts,
+            boolean transform,
+            List<RawPacket> outPkts)
+    {
+        for (RawPacket inPkt : inPkts)
+        {
+            if (inPkt != null)
+            {
+                RawPacket outPkt
+                    = transform
+                        ? srtpTransformer.transform(inPkt)
+                        : srtpTransformer.reverseTransform(inPkt);
+
+                if (outPkt != null)
+                    outPkts.add(outPkt);
+            }
+        }
+        return outPkts;
     }
 }
