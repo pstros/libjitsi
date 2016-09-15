@@ -89,7 +89,6 @@ public class AES
     private static final Class<?>[] FACTORY_CLASSES
         = {
             BouncyCastleBlockCipherFactory.class,
-            OpenSSLBlockCipherFactory.class,
             SunJCEBlockCipherFactory.class,
             SunPKCS11BlockCipherFactory.class,
         };
@@ -122,11 +121,6 @@ public class AES
     private static final byte[] in = new byte[BLOCK_SIZE * 1024];
 
     /**
-     * The key buffer to be used for the benchmarking of {@link #factories}.
-     */
-    private static final byte[] key = new byte[BLOCK_SIZE];
-
-    /**
      * The <tt>Logger</tt> used by the <tt>AES</tt> class to print out debug
      * information.
      */
@@ -148,9 +142,7 @@ public class AES
         ConfigurationService cfg = LibJitsi.getConfigurationService();
 
         FACTORY_CLASS_NAME
-            = (cfg == null)
-                ? System.getProperty(FACTORY_CLASS_NAME_PNAME)
-                : cfg.getString(FACTORY_CLASS_NAME_PNAME);
+            = ConfigUtils.getString(cfg, FACTORY_CLASS_NAME_PNAME, null);
     }
 
     /**
@@ -158,13 +150,16 @@ public class AES
      * and returns the fastest-performing element.
      *
      * @param factories the <tt>BlockCipherFactory</tt> instances to benchmark
+     * @param keySize AES key size (16, 24, 32 bytes)
      * @return the fastest-performing <tt>BlockCipherFactory</tt> among the
      * specified <tt>factories</tt>
      */
-    private static BlockCipherFactory benchmark(BlockCipherFactory[] factories)
+    private static BlockCipherFactory benchmark(
+            BlockCipherFactory[] factories,
+            int keySize)
     {
         Random random = AES.random;
-        byte[] key = AES.key;
+        byte[] key = new byte[keySize];
         byte[] in = AES.in;
 
         random.nextBytes(key);
@@ -177,20 +172,7 @@ public class AES
         long minTime = Long.MAX_VALUE;
         BlockCipherFactory minFactory = null;
 
-        // Log information for the purposes of debugging.
-        final boolean loggerIsTraceEnabled;
-        StringBuilder trace; 
-
-        if (logger.isTraceEnabled())
-        {
-            loggerIsTraceEnabled = true;
-            trace = new StringBuilder();
-        }
-        else
-        {
-            loggerIsTraceEnabled = false;
-            trace = null;
-        }
+        StringBuilder log = new StringBuilder();
 
         for (int f = 0; f < factories.length; ++f)
         {
@@ -201,7 +183,7 @@ public class AES
 
             try
             {
-                BlockCipher cipher = factory.createBlockCipher();
+                BlockCipher cipher = factory.createBlockCipher(keySize);
 
                 if (cipher == null)
                 {
@@ -234,16 +216,12 @@ public class AES
                         minFactory = factory;
                     }
 
-                    // Log information for the purposes of debugging.
-                    if (loggerIsTraceEnabled)
-                    {
-                        if (trace.length() != 0)
-                        {
-                            trace.append(", ");
-                        }
-                        trace.append(getSimpleClassName(factory)).append(' ')
-                            .append(time);
-                    }
+                    if (log.length() != 0)
+                        log.append(", ");
+
+                    log.append(getSimpleClassName(factory))
+                        .append(' ')
+                        .append(time);
                 }
             }
             catch (Throwable t)
@@ -255,13 +233,12 @@ public class AES
             }
         }
 
-        // Log information for the purposes of debugging.
-        if (loggerIsTraceEnabled && trace.length() != 0)
+        if (log.length() != 0)
         {
-            logger.trace(
+            logger.info(
                     "AES benchmark"
                         + " (of execution times expressed in nanoseconds): "
-                        + trace);
+                        + log);
         }
 
         return minFactory;
@@ -270,11 +247,12 @@ public class AES
     /**
      * Initializes a new <tt>BlockCipher</tt> instance which implements Advanced
      * Encryption Standard (AES).
+     * @param keySize length of the AES key (16, 24, 32 bytes)
      *
      * @return a new <tt>BlockCipher</tt> instance which implements Advanced
      * Encryption Standard (AES)
      */
-    public static BlockCipher createBlockCipher()
+    public static BlockCipher createBlockCipher(int keySize)
     {
         BlockCipherFactory factory;
 
@@ -289,7 +267,7 @@ public class AES
             {
                 try
                 {
-                    factory = getBlockCipherFactory();
+                    factory = getBlockCipherFactory(keySize);
                 }
                 catch (Throwable t)
                 {
@@ -322,16 +300,11 @@ public class AES
                     if (AES.factory != factory)
                     {
                         AES.factory = factory;
-                        if (logger.isDebugEnabled())
-                        {
-                            // Simplify the name of the BlockCipherFactory class
-                            // to be employed for the purposes of brevity and
-                            // ease.
-                            logger.debug(
-                                    "Will employ AES implemented by "
-                                            + getSimpleClassName(factory)
-                                            + ".");
-                        }
+                        // Simplify the name of the BlockCipherFactory class to
+                        // be employed for the purposes of brevity and ease.
+                        logger.info(
+                                "Will employ AES implemented by "
+                                    + getSimpleClassName(factory) + ".");
                     }
                 }
             }
@@ -339,7 +312,7 @@ public class AES
 
         try
         {
-            return factory.createBlockCipher();
+            return factory.createBlockCipher(keySize);
         }
         catch (Exception ex)
         {
@@ -528,11 +501,12 @@ public class AES
      * Benchmarks the well-known <tt>BlockCipherFactory</tt> implementations and
      * returns the fastest one. 
      * </p>
+     * @param keySize AES key size (16, 24, 32 bytes)
      *
      * @return a <tt>BlockCipherFactory</tt> instance to be used by the
      * <tt>AES</tt> class to initialize <tt>BlockCipher</tt>s
      */
-    private static BlockCipherFactory getBlockCipherFactory()
+    private static BlockCipherFactory getBlockCipherFactory(int keySize)
     {
         BlockCipherFactory[] factories = AES.factories;
 
@@ -547,7 +521,7 @@ public class AES
         // Benchmark the BlockCiphers provided by the available
         // BlockCipherFactories in order to select the fastest-performing
         // BlockCipherFactory.
-        BlockCipherFactory minFactory = benchmark(factories);
+        BlockCipherFactory minFactory = benchmark(factories, keySize);
 
         // The user may have specified a specific BlockCipherFactory class
         // (name) through the FACTORY_CLASS_NAME_PNAME ConfigurationService
@@ -592,7 +566,7 @@ public class AES
         Class<?> clazz = factory.getClass();
         String className = clazz.getSimpleName();
 
-        if ((className == null) || (className.length() == 0))
+        if (className == null || className.length() == 0)
             className = clazz.getName();
 
         String suffix = BLOCK_CIPHER_FACTORY_SIMPLE_CLASS_NAME;
@@ -638,29 +612,12 @@ public class AES
          * {@inheritDoc}
          */
         @Override
-        public BlockCipher createBlockCipher()
+        public BlockCipher createBlockCipher(int keySize)
             throws Exception
         {
+            // The value of keySize can be ignored for BouncyCastle, it
+            // determines the AES algorithm to be used with the KeyParameter.
             return new AESFastEngine();
-        }
-    }
-
-    /**
-     * Implements <tt>BlockCipherFactory</tt> using OpenSSL.
-     *
-     * @author Lyubomir Marinov
-     */
-    public static class OpenSSLBlockCipherFactory
-        implements BlockCipherFactory
-    {
-        /**
-         * {@inheritDoc}
-         */
-        @Override
-        public BlockCipher createBlockCipher()
-            throws Exception
-        {
-            return new OpenSSLBlockCipher(OpenSSLBlockCipher.AES_128_ECB);
         }
     }
 
@@ -677,7 +634,7 @@ public class AES
          */
         public SunJCEBlockCipherFactory()
         {
-            super("AES_128/ECB/NoPadding", "SunJCE");
+            super("AES_<size>/ECB/NoPadding", "SunJCE");
         }
     }
 
@@ -766,7 +723,7 @@ public class AES
         public SunPKCS11BlockCipherFactory()
             throws Exception
         {
-            super("AES_128/ECB/NoPadding", getProvider());
+            super("AES_<size>/ECB/NoPadding", getProvider());
         }
     }
 }

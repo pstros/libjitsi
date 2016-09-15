@@ -24,10 +24,12 @@ import java.util.concurrent.locks.*;
 import javax.media.rtp.*;
 
 import net.sf.fmj.media.util.*;
+import org.ice4j.util.*;
 import org.jitsi.service.configuration.*;
 import org.jitsi.service.libjitsi.*;
 import org.jitsi.service.packetlogging.*;
 import org.jitsi.util.*;
+import org.jitsi.util.Logger; // Disambiguation.
 
 /**
  *
@@ -54,6 +56,16 @@ public abstract class RTPConnectorOutputStream
      * the capacity of the queue is unlimited.
      */
     public static final int PACKET_QUEUE_CAPACITY;
+
+    /**
+     * The maximum size of the queues used as pools for unused objects.
+     */
+    public static final int POOL_CAPACITY;
+
+    /**
+     * The size of the window over which average bitrate will be calculated.
+     */
+    private static final int AVERAGE_BITRATE_WINDOW_MS;
 
     /**
      * The flag which controls whether this {@link RTPConnectorOutputStream}
@@ -85,6 +97,21 @@ public abstract class RTPConnectorOutputStream
     private static final String PACKET_QUEUE_CAPACITY_PNAME
         = RTPConnectorOutputStream.class.getName() + ".PACKET_QUEUE_CAPACITY";
 
+    /**
+     * The name of the property which specifies the value of {@link
+     * #POOL_CAPACITY}.
+     */
+    private static final String POOL_CAPACITY_PNAME
+        = RTPConnectorOutputStream.class.getName() + ".POOL_CAPACITY";
+
+    /**
+     * The name of the property which specifies the value of {@link
+     * #AVERAGE_BITRATE_WINDOW_MS}.
+     */
+    private static final String AVERAGE_BITRATE_WINDOW_MS_PNAME
+        = RTPConnectorOutputStream.class.getName()
+            + ".AVERAGE_BITRATE_WINDOW_MS";
+
     static
     {
         ConfigurationService cfg = LibJitsi.getConfigurationService();
@@ -92,6 +119,11 @@ public abstract class RTPConnectorOutputStream
         // Set USE_SEND_THREAD
         USE_SEND_THREAD
             = ConfigUtils.getBoolean(cfg, USE_SEND_THREAD_PNAME, true);
+
+        POOL_CAPACITY = ConfigUtils.getInt(cfg, POOL_CAPACITY_PNAME, 100);
+
+        AVERAGE_BITRATE_WINDOW_MS
+            = ConfigUtils.getInt(cfg, AVERAGE_BITRATE_WINDOW_MS_PNAME, 5000);
 
         // Set PACKET_QUEUE_CAPACITY
         int packetQueueCapacity
@@ -108,7 +140,17 @@ public abstract class RTPConnectorOutputStream
         }
 
         PACKET_QUEUE_CAPACITY
-            = packetQueueCapacity >= 0 ? packetQueueCapacity : 256;
+            = packetQueueCapacity >= 0 ? packetQueueCapacity : 1024;
+
+        if (logger.isDebugEnabled())
+        {
+            logger.debug("Initialized configuration. "
+                         + "Send thread: " + USE_SEND_THREAD
+                         + ". Pool capacity: " + POOL_CAPACITY
+                         + ". Queue capacity: " + PACKET_QUEUE_CAPACITY
+                         + ". Avg bitrate window: " + AVERAGE_BITRATE_WINDOW_MS);
+
+        }
     }
 
     /**
@@ -182,7 +224,7 @@ public abstract class RTPConnectorOutputStream
      * allocations performed by {@link #packetize(byte[], int, int, Object)}.
      */
     private final LinkedBlockingQueue<RawPacket> rawPacketPool
-        = new LinkedBlockingQueue<>();
+        = new LinkedBlockingQueue<>(POOL_CAPACITY);
 
     /**
      * Stream targets' IP addresses and ports.
@@ -199,6 +241,13 @@ public abstract class RTPConnectorOutputStream
      * Whether this {@link RTPConnectorOutputStream} is closed.
      */
     private boolean closed = false;
+
+    /**
+     * The {@code RateStatistics} instance used to calculate the sending bitrate
+     * of this output stream.
+     */
+    private final RateStatistics rateStatistics
+        = new RateStatistics(AVERAGE_BITRATE_WINDOW_MS);
 
     /**
      * Initializes a new <tt>RTPConnectorOutputStream</tt> which is to send
@@ -403,6 +452,8 @@ public abstract class RTPConnectorOutputStream
         }
 
         numberOfPackets++;
+        if(targets.isEmpty())
+            logger.warn("targets list empty, not sending packet");
         for (InetSocketAddress target : targets)
         {
             try
@@ -426,7 +477,7 @@ public abstract class RTPConnectorOutputStream
             catch (IOException ioe)
             {
                 rawPacketPool.offer(packet);
-                logger.warn(
+                logger.error(
                     "Failed to send a packet to target " + target + ":" + ioe);
                 return false;
             }
@@ -622,6 +673,7 @@ public abstract class RTPConnectorOutputStream
             return true;
 
         boolean success = true;
+        long now = System.currentTimeMillis();
 
         for (RawPacket pkt : pkts)
         {
@@ -638,6 +690,10 @@ public abstract class RTPConnectorOutputStream
                         // was returned to the pool by send().
                         success = false;
                     }
+                    else
+                    {
+                        rateStatistics.update(pkt.getLength(), now);
+                    }
                 }
                 else
                 {
@@ -647,6 +703,23 @@ public abstract class RTPConnectorOutputStream
         }
 
         return success;
+    }
+
+    /**
+     * @return the current output bitrate in bits per second.
+     */
+    public long getOutputBitrate()
+    {
+        return getOutputBitrate(System.currentTimeMillis());
+    }
+
+    /**
+     * @return the current output bitrate in bits per second.
+     * @param now the current time.
+     */
+    public long getOutputBitrate(long now)
+    {
+        return rateStatistics.getRate(now);
     }
 
     private class Queue
@@ -699,10 +772,22 @@ public abstract class RTPConnectorOutputStream
         final Thread sendThread;
 
         /**
+         * The instance optionally used to gather and print statistics about
+         * this queue.
+         */
+        QueueStatistics queueStats = null;
+
+        /**
          * Initializes a new {@link Queue} instance and starts its send thread.
          */
         private Queue()
         {
+            if (logger.isTraceEnabled())
+            {
+                queueStats = new QueueStatistics(
+                    getClass().getSimpleName() + "-" + hashCode());
+            }
+
             sendThread
                 = new Thread()
             {
@@ -739,12 +824,17 @@ public abstract class RTPConnectorOutputStream
             buffer.len = len;
             buffer.context = context;
 
+            long now = System.currentTimeMillis();
             if (queue.size() >= PACKET_QUEUE_CAPACITY)
             {
                 // Drop from the head of the queue.
                 Buffer b = queue.poll();
                 if (b != null)
                 {
+                    if (queueStats != null)
+                    {
+                        queueStats.remove(now);
+                    }
                     pool.offer(b);
                     numDroppedPackets++;
                     if (logDroppedPacket(numDroppedPackets))
@@ -755,7 +845,11 @@ public abstract class RTPConnectorOutputStream
                     }
                 }
             }
-            queue.offer(buffer);
+
+            if (queue.offer(buffer) && queueStats != null)
+            {
+                queueStats.add(now);
+            }
         }
 
         /**
@@ -799,19 +893,45 @@ public abstract class RTPConnectorOutputStream
 
                     // The current thread has potentially waited.
                     if (closed)
+                    {
                         break;
+                    }
 
                     if (buffer == null)
+                    {
                         continue;
+                    }
 
-                    // We will sooner or later process the Buffer. Since this
-                    // may take a non-negligible amount of time, do it before
-                    // taking pacing into account.
-                    RawPacket[] pkts
+                    if (queueStats != null)
+                    {
+                        queueStats.remove(System.currentTimeMillis());
+                    }
+
+                    RawPacket[] pkts;
+                    try
+                    {
+                        // We will sooner or later process the Buffer. Since this
+
+                        // may take a non-negligible amount of time, do it
+                        // before
+                        // taking pacing into account.
+                        pkts
                             = packetize(
-                            buffer.buf, 0, buffer.len,
-                            buffer.context);
-                    pool.offer(buffer);
+                                buffer.buf, 0, buffer.len,
+                                buffer.context);
+                    }
+                    catch (Exception e)
+                    {
+                        // The sending thread must not die because of a failure
+                        // in the conversion to RawPacket[] or any of the
+                        // transformations (because of e.g. parsing errors).
+                        logger.error("Failed to handle an outgoing packet: ", e);
+                        continue;
+                    }
+                    finally
+                    {
+                        pool.offer(buffer);
+                    }
 
                     if (perNanos > 0 && maxBuffers > 0)
                     {
@@ -829,8 +949,18 @@ public abstract class RTPConnectorOutputStream
                         }
                     }
 
-                    RTPConnectorOutputStream.this.write(pkts);
+                    try
+                    {
+                        RTPConnectorOutputStream.this.write(pkts);
+                    }
+                    catch (Exception e)
+                    {
+                        logger.error("Failed to send a packet: ", e);
+                        continue;
+                    }
+
                     buffersProcessedInCurrentInterval++;
+
                 }
             }
             finally

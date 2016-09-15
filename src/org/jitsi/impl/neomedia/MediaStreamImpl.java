@@ -35,6 +35,7 @@ import org.jitsi.impl.neomedia.protocol.*;
 import org.jitsi.impl.neomedia.rtcp.termination.strategies.*;
 import org.jitsi.impl.neomedia.rtp.*;
 import org.jitsi.impl.neomedia.rtp.translator.*;
+import org.jitsi.impl.neomedia.stats.*;
 import org.jitsi.impl.neomedia.transform.*;
 import org.jitsi.impl.neomedia.transform.rewriting.*;
 import org.jitsi.impl.neomedia.transform.csrc.*;
@@ -173,14 +174,13 @@ public class MediaStreamImpl
      * {@link this.rtpManager}, given that it offers this information with its
      * getLocalSSRC() method? TAG(cat4-local-ssrc-hurricane)
      */
-    private long localSourceID
-        = Math.abs(new Random().nextLong()) % Integer.MAX_VALUE;
+    private long localSourceID = (new Random().nextInt()) & 0x00000000FFFFFFFFL;
 
     /**
      * The MediaStreamStatsImpl object used to compute the statistics about
      * this MediaStreamImpl.
      */
-    private MediaStreamStatsImpl mediaStreamStatsImpl;
+    private MediaStreamStats2Impl mediaStreamStatsImpl;
 
     /**
      * The indicator which determines whether this <tt>MediaStream</tt> is set
@@ -248,12 +248,6 @@ public class MediaStreamImpl
      * and receives RTP and RTCP traffic on behalf of this <tt>MediaStream</tt>.
      */
     private StreamRTPManager rtpManager;
-
-    /**
-     * The <tt>RTPTranslator</tt>, if any, which forwards RTP and RTCP traffic
-     * between this and other <tt>MediaStream</tt>s.
-     */
-    protected RTPTranslator rtpTranslator;
 
     /**
      * The indicator which determines whether {@link #createSendStreams()} has
@@ -340,20 +334,20 @@ public class MediaStreamImpl
      * The transformer which caches outgoing RTP packets for this
      * {@link MediaStream}.
      */
-    private final CachingTransformer cachingTransformer
-            = createCachingTransformer();
+    private CachingTransformer cachingTransformer = createCachingTransformer();
 
     /**
      * The chain used to by the RTPConnector to transform packets.
      */
-    private TransformEngine transformEngineChain;
+    private TransformEngineChain transformEngineChain;
 
     /**
-     * The {@code RetransmissionRequester} instance for this
+     * The {@code RetransmissionRequesterImpl} instance for this
      * {@code MediaStream} which will request missing packets by sending
      * RTCP NACKs.
      */
-    private RetransmissionRequester retransmissionRequester;
+    private final RetransmissionRequesterImpl retransmissionRequester
+        = createRetransmissionRequester();
 
     /**
      * Initializes a new <tt>MediaStreamImpl</tt> instance which will use the
@@ -418,7 +412,7 @@ public class MediaStreamImpl
         if (connector != null)
             setConnector(connector);
 
-        this.mediaStreamStatsImpl = new MediaStreamStatsImpl(this);
+        this.mediaStreamStatsImpl = new MediaStreamStats2Impl(this);
 
         if (logger.isTraceEnabled())
         {
@@ -640,6 +634,33 @@ public class MediaStreamImpl
                 activeRTPExtensions.remove(extensionID);
         }
 
+        enableRTPExtension(extensionID, rtpExtension);
+    }
+
+    /**
+     * Enables all RTP extensions configured for this {@link MediaStream}.
+     */
+    private void enableRTPExtensions()
+    {
+        synchronized (activeRTPExtensions)
+        {
+            for (Map.Entry<Byte, RTPExtension> entry
+                    : activeRTPExtensions.entrySet())
+            {
+                enableRTPExtension(entry.getKey(), entry.getValue());
+            }
+        }
+    }
+
+    /**
+     * Enables the use of a specific RTP extension.
+     * @param extensionID the ID.
+     * @param rtpExtension the extension.
+     */
+    private void enableRTPExtension(byte extensionID, RTPExtension rtpExtension)
+    {
+        boolean active
+            = !MediaDirection.INACTIVE.equals(rtpExtension.getDirection());
 
         if (RTPExtension.ABS_SEND_TIME_URN.equals(
                 rtpExtension.getURI().toString()))
@@ -676,6 +697,17 @@ public class MediaStreamImpl
         if (csrcEngine != null)
         {
             csrcEngine = null;
+        }
+
+        if (cachingTransformer != null)
+        {
+            cachingTransformer.close();
+            cachingTransformer = null;
+        }
+
+        if (retransmissionRequester != null)
+        {
+            retransmissionRequester.close();
         }
 
         if (transformEngineChain != null)
@@ -933,7 +965,7 @@ public class MediaStreamImpl
      */
     protected AbsSendTimeEngine createAbsSendTimeEngine()
     {
-        return null;
+        return new AbsSendTimeEngine();
     }
 
     /**
@@ -946,10 +978,11 @@ public class MediaStreamImpl
     }
 
     /**
-     * Creates the {@link RetransmissionRequester} for this {@code MediaStream}.
-     * @return the created {@link RetransmissionRequester}.
+     * Creates the {@link RetransmissionRequesterImpl} for this
+     * {@code MediaStream}.
+     * @return the created {@link RetransmissionRequesterImpl}.
      */
-    protected RetransmissionRequester createRetransmissionRequester()
+    protected RetransmissionRequesterImpl createRetransmissionRequester()
     {
         return null;
     }
@@ -1008,10 +1041,14 @@ public class MediaStreamImpl
             statisticsEngine = new StatisticsEngine(this);
         engineChain.add(statisticsEngine);
 
-        retransmissionRequester = createRetransmissionRequester();
         if (retransmissionRequester != null)
         {
             engineChain.add(retransmissionRequester);
+        }
+
+        if (cachingTransformer != null)
+        {
+            engineChain.add(cachingTransformer);
         }
 
         absSendTimeEngine = createAbsSendTimeEngine();
@@ -1020,16 +1057,16 @@ public class MediaStreamImpl
             engineChain.add(absSendTimeEngine);
         }
 
-        if (cachingTransformer != null)
-        {
-            engineChain.add(cachingTransformer);
-        }
-
         // Debug
         debugTransformEngine
             = DebugTransformEngine.createDebugTransformEngine(this);
         if (debugTransformEngine != null)
             engineChain.add(debugTransformEngine);
+
+        // Discard
+        DiscardTransformEngine discardEngine = createDiscardEngine();
+        if (discardEngine != null)
+            engineChain.add(discardEngine);
 
         // SRTP
         engineChain.add(srtpControl.getTransformEngine());
@@ -1042,6 +1079,11 @@ public class MediaStreamImpl
         SsrcTransformEngine ssrcEngine = createSsrcTransformEngine();
         if (ssrcEngine != null)
             engineChain.add(ssrcEngine);
+
+        // RTP extensions may be implemented in some of the engines just
+        // created (e.g. abs-send-time). So take into account their
+        // configuration.
+        enableRTPExtensions();
 
         return
             new TransformEngineChain(
@@ -1168,6 +1210,7 @@ public class MediaStreamImpl
     {
         InetSocketAddress newDataAddr;
         InetSocketAddress newControlAddr;
+        AbstractRTPConnector connector = rtpConnector;
 
         if (target == null)
         {
@@ -1190,7 +1233,7 @@ public class MediaStreamImpl
          * (execution) time (between removeTargets and addTarget) without a
          * target.
          */
-        if (rtpConnectorTarget != null)
+        if (rtpConnectorTarget != null && connector != null)
         {
             InetSocketAddress oldDataAddr = rtpConnectorTarget.getDataAddress();
             boolean removeTargets
@@ -1211,15 +1254,17 @@ public class MediaStreamImpl
 
             if (removeTargets)
             {
-                rtpConnector.removeTargets();
+                connector.removeTargets();
                 rtpConnectorTarget = null;
             }
         }
 
         boolean targetIsSet;
 
-        if (target == null)
+        if (target == null || newDataAddr == null || connector == null)
+        {
             targetIsSet = true;
+        }
         else
         {
             try
@@ -1238,7 +1283,7 @@ public class MediaStreamImpl
                     controlPort = newControlAddr.getPort();
                 }
 
-                rtpConnector.addTarget(
+                connector.addTarget(
                         new SessionAddress(
                                 newDataAddr.getAddress(), newDataAddr.getPort(),
                                 controlInetAddr, controlPort));
@@ -1549,7 +1594,7 @@ public class MediaStreamImpl
      * <tt>MediaStream</tt>
      */
     @Override
-    public MediaStreamStatsImpl getMediaStreamStats()
+    public MediaStreamStats2Impl getMediaStreamStats()
     {
         return mediaStreamStatsImpl;
     }
@@ -2019,7 +2064,7 @@ public class MediaStreamImpl
             GlobalTransmissionStats s = rtpManager.getGlobalTransmissionStats();
 
             String rtpstat = StatisticsEngine.RTP_STAT_PREFIX;
-            MediaStreamStatsImpl mss = getMediaStreamStats();
+            MediaStreamStats2Impl mss = getMediaStreamStats();
             StringBuilder buff = new StringBuilder(rtpstat);
             MediaType mediaType = getMediaType();
             String mediaTypeStr
@@ -2055,7 +2100,8 @@ public class MediaStreamImpl
                     .append(eol)
                 .append("bytes received: ").append(rs.getBytesRecd())
                     .append(eol)
-                .append("packets lost: ").append(statisticsEngine.getLost())
+                .append("packets lost: ")
+                    .append(mss.getReceiveStats().getPacketsLost())
                     .append(eol)
                 .append("min interarrival jitter: ")
                     .append(statisticsEngine.getMinInterArrivalJitter())
@@ -2253,8 +2299,6 @@ public class MediaStreamImpl
             AbstractRTPConnector oldValue,
             AbstractRTPConnector newValue)
     {
-        srtpControl.setConnector(newValue);
-
         if (newValue != null)
         {
             /*
@@ -2280,6 +2324,8 @@ public class MediaStreamImpl
             // Trigger the re-configuration of RTP header extensions
             addRTPExtension((byte)0, null);
         }
+
+        srtpControl.setConnector(newValue);
 
         /*
          * TODO The following is a very ugly way to expose the RTPConnector
@@ -2723,20 +2769,6 @@ public class MediaStreamImpl
             if (deviceSession != null)
                 deviceSession.setMute(this.mute);
         }
-    }
-
-    /**
-     * Sets the <tt>RTPTranslator</tt> which is to forward RTP and RTCP traffic
-     * between this and other <tt>MediaStream</tt>s.
-     *
-     * @param rtpTranslator the <tt>RTPTranslator</tt> which is to forward RTP
-     * and RTCP traffic between this and other <tt>MediaStream</tt>s
-     */
-    @Override
-    public void setRTPTranslator(RTPTranslator rtpTranslator)
-    {
-        if (this.rtpTranslator != rtpTranslator)
-            this.rtpTranslator = rtpTranslator;
     }
 
     /**
@@ -3531,10 +3563,10 @@ public class MediaStreamImpl
      */
     @Override
     public void configureSSRCRewriting(
-        final Set<Integer> ssrcGroup, final Integer ssrcTargetPrimary,
-        final Map<Integer, Byte> ssrc2fec,
-        final Map<Integer, Byte> ssrc2red,
-        final Map<Integer, Integer> rtxGroups, final Integer ssrcTargetRTX)
+        final Set<Long> ssrcGroup, final Long ssrcTargetPrimary,
+        final Map<Long, Byte> ssrc2fec,
+        final Map<Long, Byte> ssrc2red,
+        final Map<Long, Long> rtxGroups, final Long ssrcTargetRTX)
     {
         ssrcRewritingEngine.map(ssrcGroup, ssrcTargetPrimary,
             ssrc2fec, ssrc2red,
@@ -3545,6 +3577,7 @@ public class MediaStreamImpl
      * {@inheritDoc}
      */
     @Override
+    @SuppressWarnings("unchecked")
     public void injectPacket(RawPacket pkt, boolean data, TransformEngine after)
         throws TransmissionFailedException
     {
@@ -3611,5 +3644,37 @@ public class MediaStreamImpl
     public RawPacketCache getPacketCache()
     {
         return cachingTransformer;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public RetransmissionRequester getRetransmissionRequester()
+    {
+        return retransmissionRequester;
+    }
+
+    /**
+     * {@inheritDoc}
+     * <br/>
+     * Note that the chain is only initialized when a {@link StreamConnector} is
+     * set for the {@link MediaStreamImpl} via
+     * {@link #setConnector(StreamConnector)} or by passing a non-null connector
+     * to the constructor. Until the chain is initialized, this method will
+     * return null.
+     */
+    @Override
+    public TransformEngineChain getTransformEngineChain()
+    {
+        return transformEngineChain;
+    }
+
+    /**
+     * Creates the {@link DiscardTransformEngine} for this stream. Allows
+     * extenders to override.
+     */
+    protected DiscardTransformEngine createDiscardEngine()
+    {
+        return null;
     }
 }

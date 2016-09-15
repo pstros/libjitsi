@@ -25,23 +25,28 @@ import javax.media.control.*;
 import javax.media.format.*;
 import javax.media.protocol.*;
 import javax.media.rtp.*;
+import javax.media.rtp.rtcp.*;
 
 import net.sf.fmj.media.rtp.*;
 
 import org.jitsi.impl.neomedia.device.*;
 import org.jitsi.impl.neomedia.rtcp.*;
-import org.jitsi.impl.neomedia.rtcp.termination.strategies.*;
-import org.jitsi.impl.neomedia.rtp.*;
 import org.jitsi.impl.neomedia.rtp.remotebitrateestimator.*;
+import org.jitsi.impl.neomedia.stats.*;
 import org.jitsi.impl.neomedia.transform.rtcp.*;
 import org.jitsi.service.neomedia.*;
 import org.jitsi.service.neomedia.control.*;
 import org.jitsi.service.neomedia.format.*;
 import org.jitsi.service.neomedia.rtp.*;
+import org.jitsi.service.neomedia.stats.*;
 import org.jitsi.util.*;
 
 /**
  * Class used to compute stats concerning a MediaStream.
+ *
+ * Note: please do not add more code here. New code should be added to
+ * {@link MediaStreamStats2Impl} instead, where we can manage the complexity
+ * and consistency better.
  *
  * @author Vincent Lucas
  * @author Boris Grozev
@@ -54,7 +59,7 @@ public class MediaStreamStatsImpl
     /**
      * Enumeration of the direction (DOWNLOAD or UPLOAD) used for the stats.
      */
-    private enum StreamDirection
+    public enum StreamDirection
     {
         DOWNLOAD,
         UPLOAD
@@ -229,13 +234,7 @@ public class MediaStreamStatsImpl
             @Override
             public void rtcpReportReceived(RTCPReport report)
             {
-                List<?> feedbackReports = report.getFeedbackReports();
-
-                if (!feedbackReports.isEmpty())
-                {
-                    updateNewReceivedFeedback(
-                            (RTCPFeedback) feedbackReports.get(0));
-                }
+                MediaStreamStatsImpl.this.rtcpReportReceived(report);
             }
 
             /**
@@ -323,9 +322,9 @@ public class MediaStreamStatsImpl
     {
         this.mediaStreamImpl = mediaStreamImpl;
 
-        getRTCPReports().addRTCPReportListener(rtcpReportListener);
-
         updateTimeMs = System.currentTimeMillis();
+
+        getRTCPReports().addRTCPReportListener(rtcpReportListener);
     }
 
     /**
@@ -387,26 +386,32 @@ public class MediaStreamStatsImpl
      */
     public static int getRoundTripDelay(long timeMs, long lsr, long dlsr)
     {
-        int roundTripDelay = -1;
+        long ntpTime = TimeUtils.toNtpTime(timeMs);
+        ntpTime = TimeUtils.toNtpShortFormat(ntpTime);
 
-        if (lsr > 0)
+        long ntprtd = ntpTime - lsr - dlsr;
+
+        long delayLong;
+        if (ntprtd >= 0)
         {
-            long ntpTime = TimeUtils.toNtpTime(timeMs);
-            ntpTime = TimeUtils.toNtpShortFormat(ntpTime);
-
-            long ntprtd = ntpTime - lsr - dlsr;
-
-            if (ntprtd > 0)
-            {
-                long delayLong = TimeUtils.ntpShortToMs(ntprtd);
-                if (delayLong < Integer.MAX_VALUE)
-                {
-                    roundTripDelay = (int) delayLong;
-                }
-            }
+            delayLong = TimeUtils.ntpShortToMs(ntprtd);
+        }
+        else
+        {
+            /*
+             * Even if ntprtd is negative we compute delayLong
+             * as it might round to zero.
+             * ntpShortToMs expect positive numbers.
+             */
+            delayLong = -TimeUtils.ntpShortToMs(-ntprtd);
         }
 
-        return roundTripDelay;
+        if (delayLong >= 0 && delayLong < Integer.MAX_VALUE)
+        {
+            return (int) delayLong;
+        }
+
+        return -1;
     }
 
     /**
@@ -419,30 +424,21 @@ public class MediaStreamStatsImpl
      * @param ssrc the SSRC which identifies the remote RTP endpoint.
      * @param localTimeMs the local in milliseconds since the epoch.
      * @return an estimation of the time of the RTP endpoint with SSRC
-     * <tt>ssrc</tt> at local time <tt>localTime</tt>, in milliseconds since
+     * <tt>ssrc</tt> at local time <tt>localTimeMs</tt>, in milliseconds since
      * the epoch.
      */
     private long maybeEstimateRemoteClock(long ssrc, long localTimeMs)
     {
         long remoteTimeMs = localTimeMs;
 
-        RTCPTerminationStrategy rtcpTermination
-            = mediaStreamImpl.getRTCPTerminationStrategy();
-        if (rtcpTermination instanceof BasicRTCPTerminationStrategy)
+        RemoteClock remoteClock
+            = mediaStreamImpl.getStreamRTPManager().findRemoteClock(ssrc);
+        if (remoteClock != null)
         {
-            BasicRTCPTerminationStrategy brts
-                = (BasicRTCPTerminationStrategy) rtcpTermination;
-
-            RemoteClockEstimator remoteClockEstimator
-                = brts.getRemoteClockEstimator();
-            if (remoteClockEstimator != null)
+            Timestamp remoteTs = remoteClock.estimate(localTimeMs);
+            if (remoteTs != null)
             {
-                RemoteClock remoteClock
-                    = remoteClockEstimator.estimate((int) ssrc, localTimeMs);
-                if (remoteClock != null)
-                {
-                    remoteTimeMs = remoteClock.getRemoteTime();
-                }
+                remoteTimeMs = remoteTs.getSystemTimeMs();
             }
         }
 
@@ -588,7 +584,7 @@ public class MediaStreamStatsImpl
      */
     private Set<JitterBufferControl> getJitterBufferControls()
     {
-        Set<JitterBufferControl> set = new HashSet<JitterBufferControl>();
+        Set<JitterBufferControl> set = new HashSet<>();
 
         if (mediaStreamImpl.isStarted())
         {
@@ -775,7 +771,7 @@ public class MediaStreamStatsImpl
      * RTP jitter was received.
      * @param remoteJitter the jitter received, in RTP time units.
      */
-    void updateRemoteJitter(long remoteJitter)
+    public void updateRemoteJitter(long remoteJitter)
     {
         if((remoteJitter < minRemoteInterArrivalJitter)
                 || (minRemoteInterArrivalJitter == -1))
@@ -827,28 +823,23 @@ public class MediaStreamStatsImpl
      * @param streamDirection The stream direction (DOWNLOAD or UPLOAD) of the
      * stream from which this function retrieve the number of sent/received
      * bytes.
-     *
      * @return the number of sent/received bytes for this stream.
      */
     private long getNbBytes(StreamDirection streamDirection)
     {
-        StreamRTPManager rtpManager = mediaStreamImpl.queryRTPManager();
-        long nbBytes = 0;
+        return getTrackStats(streamDirection).getBytes();
+    }
 
-        if(rtpManager != null)
-        {
-            switch(streamDirection)
-            {
-            case DOWNLOAD:
-                nbBytes = rtpManager.getGlobalReceptionStats().getBytesRecd();
-                break;
-            case UPLOAD:
-                nbBytes
-                    = rtpManager.getGlobalTransmissionStats().getBytesSent();
-                break;
-            }
-        }
-        return nbBytes;
+    /**
+     * @return the aggregate track stats for a given direction.
+     * @param streamDirection the direction.
+     */
+    private TrackStats getTrackStats(StreamDirection streamDirection)
+    {
+        MediaStreamStats2Impl extended = getExtended();
+
+        return streamDirection == StreamDirection.DOWNLOAD
+            ? extended.getReceiveStats() : extended.getSendStats();
     }
 
     /**
@@ -985,31 +976,11 @@ public class MediaStreamStatsImpl
      * @param streamDirection The stream direction (DOWNLOAD or UPLOAD) of the
      * stream from which this function retrieve the number of sent/received
      * packets.
-     *
      * @return the number of packets sent/received for this stream.
      */
     private long getNbPDU(StreamDirection streamDirection)
     {
-        // We don't use the values from the RTPManager, because they are
-        // incorrect when an RTPTranslator is used.
-        long nbPDU = 0;
-
-        StatisticsEngine statisticsEngine
-                = mediaStreamImpl.getStatisticsEngine();
-        if (statisticsEngine != null)
-        {
-            switch(streamDirection)
-            {
-            case UPLOAD:
-                nbPDU = statisticsEngine.getRtpPacketsSent();
-                break;
-
-            case DOWNLOAD:
-                nbPDU = statisticsEngine.getRtpPacketsReceived();
-                break;
-            }
-        }
-        return nbPDU;
+        return getTrackStats(streamDirection).getPackets();
     }
 
     @Override
@@ -1285,6 +1256,12 @@ public class MediaStreamStatsImpl
         // deviation of the jitter.
         jitterRTPTimestampUnits[streamDirection.ordinal()]
             = feedback.getJitter();
+
+        MediaStreamStats2Impl extended = getExtended();
+        extended.updateJitter(
+            feedback.getSSRC(),
+            streamDirection,
+            rtpTimeToMs(feedback.getJitter()));
     }
 
     /**
@@ -1376,7 +1353,9 @@ public class MediaStreamStatsImpl
         // Updates the loss rate with the RTCP sender report feedback, since
         // this is the only information source available for the upload stream.
         long uploadNewNbRecv = feedback.getXtndSeqNum();
+
         nbPacketsLostUpload = feedback.getNumLost();
+
         long newNbLost
             = nbPacketsLostUpload - nbLost[streamDirection.ordinal()];
         long nbSteps = uploadNewNbRecv - uploadFeedbackNbPackets;
@@ -1393,6 +1372,9 @@ public class MediaStreamStatsImpl
         if (rtt >= 0)
         {
             setRttMs(rtt);
+
+            MediaStreamStats2Impl extended = getExtended();
+            extended.updateRtt(feedback.getSSRC(), rtt);
         }
     }
 
@@ -1547,5 +1529,89 @@ public class MediaStreamStatsImpl
                 rembListeners.add(listener);
             }
         }
+    }
+
+    /**
+     * Notifies this instance that a specific RTCP RR or SR report was received
+     * by {@link #rtcpReports}.
+     *
+     * @param report the received RTCP RR or SR report
+     */
+    private void rtcpReportReceived(RTCPReport report)
+    {
+        // reception report blocks
+        List<RTCPFeedback> feedbackReports = report.getFeedbackReports();
+
+        if (!feedbackReports.isEmpty())
+        {
+            updateNewReceivedFeedback(feedbackReports.get(0));
+
+            MediaStreamStats2Impl extended = getExtended();
+            for (RTCPFeedback rtcpFeedback : feedbackReports)
+            {
+                extended.rtcpReceiverReportReceived(
+                    rtcpFeedback.getSSRC(),
+                    rtcpFeedback.getFractionLost());
+            }
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * This method is different from {@link #getUploadRateKiloBitPerSec()} in
+     * that:
+     * 1. It is not necessary for {@link #updateStats()} to be called
+     * periodically by the user of libjitsi in order for it to return correct
+     * values.
+     * 2. The returned value is based on the average bitrate over a fixed
+     * window, as opposed to an EWMA.
+     * 3. The measurement is performed after the {@link MediaStream}'s
+     * transformations, notably after simulcast layers are dropped (i.e. closer
+     * to the network interface).
+     *
+     * The return value includes RTP payload and RTP headers, as well as RTCP.
+     */
+    @Override
+    public long getSendingBitrate()
+    {
+        long sbr = -1;
+        AbstractRTPConnector rtpConnector = mediaStreamImpl.getRTPConnector();
+
+        if (rtpConnector != null)
+        {
+            try
+            {
+                RTPConnectorOutputStream rtpStream
+                    = rtpConnector.getDataOutputStream(false);
+
+                if (rtpStream != null)
+                {
+                    long now = System.currentTimeMillis();
+                    sbr = rtpStream.getOutputBitrate(now);
+
+                    RTPConnectorOutputStream rtcpStream
+                        = rtpConnector.getControlOutputStream(false);
+                    if (rtcpStream != null)
+                    {
+                        sbr += rtcpStream.getOutputBitrate(now);
+                    }
+                }
+            }
+            catch (IOException ioe)
+            {
+                logger.warn("Failed to get sending bitrate: ", ioe);
+            }
+        }
+
+        return sbr;
+    }
+
+    /**
+     * @return this instance as a {@link MediaStreamStats2Impl}.
+     */
+    private MediaStreamStats2Impl getExtended()
+    {
+        return mediaStreamImpl.getMediaStreamStats();
     }
 }

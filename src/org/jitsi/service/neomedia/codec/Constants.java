@@ -107,6 +107,11 @@ public class Constants
     public static final String ILBC_RTP = ILBC + _RTP;
 
     /**
+     * The ptime constant.
+     */
+    public static final String PTIME = "ptime";
+
+    /**
      * The opus constant.
      */
     public static final String OPUS = "opus";
@@ -161,6 +166,14 @@ public class Constants
     public static final String PROP_OPUS_MIN_EXPECTED_PACKET_LOSS
         = "net.java.sip.communicator.impl.neomedia.codec.audio.opus.encoder"
             + ".MIN_EXPECTED_PACKET_LOSS";
+
+    /**
+     * The name of the property used to control whether VBR is enabled for the
+     * Opus encoder
+     */
+    public static final String PROP_OPUS_VBR
+            = "net.java.sip.communicator.impl.neomedia.codec.audio.opus.encoder"
+            + ".VBR";
 
     /**
      * The name of the property used to control whether FEC support is
@@ -232,6 +245,11 @@ public class Constants
      * The VP8 constant
      */
     public static final String VP8 = "VP8";
+
+    /**
+     * The RTX constant
+     */
+    public static final String RTX = "rtx";
 
     /**
      * The VP8/rtp constant.

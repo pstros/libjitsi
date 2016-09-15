@@ -25,6 +25,7 @@ import org.jitsi.impl.neomedia.transform.*;
 import org.jitsi.service.neomedia.device.*;
 import org.jitsi.service.neomedia.format.*;
 import org.jitsi.service.neomedia.rtp.*;
+import org.jitsi.service.neomedia.stats.*;
 
 /**
  * The <tt>MediaStream</tt> class represents a (generally) bidirectional RTP
@@ -187,7 +188,7 @@ public interface MediaStream
      * @return the <tt>MediaStreamStats</tt> object used to get statistics about
      * this <tt>MediaStream</tt>.
      */
-    public MediaStreamStats getMediaStreamStats();
+    public MediaStreamStats2 getMediaStreamStats();
 
     /**
      * Returns the name of this stream or <tt>null</tt> if no name has been
@@ -410,6 +411,15 @@ public interface MediaStream
     public void setRTPTranslator(RTPTranslator rtpTranslator);
 
     /**
+     * Gets the {@link RTPTranslator} which forwards RTP and RTCP traffic
+     * between this and other {@code MediaStream}s.
+     *
+     * @return the {@link RTPTranslator} which forwards RTP and RTCP traffic
+     * between this and other {@code MediaStream}s or {@code null}
+     */
+    public RTPTranslator getRTPTranslator();
+
+    /**
      * Sets the <tt>SSRCFactory</tt> which is to generate new synchronization
      * source (SSRC) identifiers.
      * 
@@ -510,10 +520,10 @@ public interface MediaStream
      * @param ssrcTargetRTX the SSRC into which the rtxGroups will be rewritten.
      */
     public void configureSSRCRewriting(
-        final Set<Integer> ssrcGroup, final Integer ssrcTargetPrimary,
-        final Map<Integer, Byte> ssrc2fec,
-        final Map<Integer, Byte> ssrc2red,
-        final Map<Integer, Integer> rtxGroups, final Integer ssrcTargetRTX);
+        final Set<Long> ssrcGroup, final Long ssrcTargetPrimary,
+        final Map<Long, Byte> ssrc2fec,
+        final Map<Long, Byte> ssrc2red,
+        final Map<Long, Long> rtxGroups, final Long ssrcTargetRTX);
 
     /**
      * Gets the {@link RawPacketCache} which (optionally) caches outgoing
@@ -521,4 +531,14 @@ public interface MediaStream
      * @return the {@link RawPacketCache} for this {@link MediaStream}.
      */
     public RawPacketCache getPacketCache();
+
+    /**
+     * @return the {@link RetransmissionRequester} for this media stream.
+     */
+    public RetransmissionRequester getRetransmissionRequester();
+
+    /**
+     * Gets the {@link TransformEngineChain} of this {@link MediaStream}.
+     */
+    public TransformEngineChain getTransformEngineChain();
 }

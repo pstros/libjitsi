@@ -19,12 +19,11 @@ import java.io.*;
 import java.util.*;
 import net.sf.fmj.media.rtp.*;
 import org.jitsi.impl.neomedia.*;
+import org.jitsi.impl.neomedia.codec.video.vp8.*;
 import org.jitsi.impl.neomedia.rtcp.*;
 import org.jitsi.impl.neomedia.rtcp.termination.strategies.*;
 import org.jitsi.service.neomedia.*;
-import org.jitsi.impl.neomedia.codec.video.*;
 import org.jitsi.util.*;
-
 
 /**
  * Does the actual work of rewriting a group of SSRCs to a target SSRC. This
@@ -43,10 +42,31 @@ class SsrcGroupRewriter
         = Logger.getLogger(SsrcGroupRewriter.class);
 
     /**
+     * The value of {@link Logger#isTraceEnabled()} from the time of the
+     * initialization of the class {@code SsrcGroupRewriter} cached for the
+     * purposes of performance.
+     */
+    private static final boolean TRACE;
+
+    /**
+     * The value of {@link Logger#isDebugEnabled()} from the time of the
+     * initialization of the class {@code SsrcGroupRewriter} cached for the
+     * purposes of performance.
+     */
+    private static final boolean DEBUG;
+
+    /**
+     * The value of {@link Logger#isWarnEnabled()} from the time of the
+     * initialization of the class {@code SsrcGroupRewriter} cached for the
+     * purposes of performance.
+     */
+    private static final boolean WARN;
+
+    /**
      * A map of SSRCs to <tt>SsrcRewriter</tt>. Each SSRC that we rewrite in
      * this group rewriter has its own rewriter.
      */
-    private final Map<Integer, SsrcRewriter> rewriters = new HashMap<>();
+    private final Map<Long, SsrcRewriter> rewriters = new HashMap<>();
 
     /**
      * The owner of this instance.
@@ -57,7 +77,7 @@ class SsrcGroupRewriter
      * The target SSRC that the rewritten RTP packets will have. This is
      * shared between all the "child" <tt>SsrcRewriter</tt>s.
      */
-    private final int ssrcTarget;
+    private final long ssrcTarget;
 
     /**
      * The low 16 bits contain the base sequence number sent in RTP data
@@ -68,29 +88,20 @@ class SsrcGroupRewriter
     int currentExtendedSeqnumBase;
 
     /**
-     * Holds the max RTP timestamp that we've sent (to the endpoint).
-     *
-     * Ideally, what we should do is fully rewrite the timestamps, unless we
-     * can take advantage of some knowledge of the system. We have observed
-     * that in the Chromium simulcast implementation the initial timestamp
-     * value is the same for all the simulcast streams. Since they also
-     * share the same NTP clock, we can conclude that the RTP timestamps
-     * advance at the same rate. This means that we don't have to rewrite
-     * the RTP timestamps TAG(timestamp-uplifting).
-     *
-     * A small problem occurs when a stream switch happens: When a stream
-     * switches we request a keyframe for the stream we want to switch into.
-     * The problem is that the frames are sampled at different times, so
-     * we might end up with a key frame that is one sampling cycle behind
-     * what we were already streaming. We hack around this by implementing
-     * "RTP timestamp uplifting".
-     *
+     * Holds the max RTP timestamp that we've sent out.
+     * <p>
+     * When there's a stream switch, we request a keyframe for the stream we
+     * want to switch into (this is done elsewhere). The problem is that the
+     * frames are sampled at different times, so we might end up with a key
+     * frame that is one sampling cycle behind what we were already streaming.
+     * We hack around this by implementing "RTP timestamp uplifting".
+     * <p>
      * When a switch occurs, we store the maximum timestamp that we've sent
      * to an endpoint. If we observe new packets (NOT retransmissions) with
      * timestamp older than what the endpoint has already seen, we overwrite
      * the timestamp with maxTimestamp + 1.
      */
-    private long maxTimestamp;
+    public long maxTimestamp = -1;
 
     /**
      * The current <tt>SsrcRewriter</tt> that we use to rewrite source
@@ -100,6 +111,22 @@ class SsrcGroupRewriter
     private SsrcRewriter activeRewriter;
 
     /**
+     * The SSRC of the RTP stream into whose RTP timestamp other RTP streams
+     * are rewritten.
+     */
+    private long _timestampSsrc;
+
+    /**
+     * Static init.
+     */
+    static
+    {
+        TRACE = logger.isTraceEnabled();
+        DEBUG = logger.isDebugEnabled();
+        WARN = logger.isWarnEnabled();
+    }
+
+    /**
      * Ctor.
      *
      * @param ssrcRewritingEngine the owner of this instance.
@@ -107,13 +134,20 @@ class SsrcGroupRewriter
      */
     public SsrcGroupRewriter(
             SsrcRewritingEngine ssrcRewritingEngine,
-            Integer ssrcTarget,
+            Long ssrcTarget,
             int seqnumBase)
     {
         this.ssrcRewritingEngine = ssrcRewritingEngine;
         this.ssrcTarget = ssrcTarget;
-
         this.currentExtendedSeqnumBase = seqnumBase;
+
+        // XXX At first it seemed like we could rewrite RTP timestamps to the
+        // first SSRC which requires RTP timestamp rewriting. However, we are
+        // sending RTCP SRs with the timestamp of ssrcTarget. Consequently, we
+        // have to rewrite the RTP timestamps to ssrcTarget. Anyway, leave the
+        // infrastructure around _timestampSsrc for the purposes of
+        // experimenting.
+        _timestampSsrc = ssrcTarget;
     }
 
     /**
@@ -126,11 +160,11 @@ class SsrcGroupRewriter
         // packet MUST NOT send a BYE packet when they leave the group.
         if (getActiveRewriter() != null)
         {
-            MediaStream mediaStream = getMediaStream();
+            MediaStream mediaStream = ssrcRewritingEngine.getMediaStream();
 
             if (mediaStream != null)
             {
-                int ssrcTarget = getSSRCTarget();
+                long ssrcTarget = getSSRCTarget();
 
                 // A BYE is to be sent in a compound RTCP packet and the latter
                 // is to start with either an SR or an RR. We do not have enough
@@ -144,12 +178,12 @@ class SsrcGroupRewriter
                 // that we can form a seemingly legal compound RTCP packet.
                 RTCPRRPacket rr
                     = new RTCPRRPacket(
-                            ssrcTarget,
+                            (int) ssrcTarget,
                             BasicRTCPTerminationStrategy
                                 .MIN_RTCP_REPORT_BLOCKS_ARRAY);
                 RTCPBYEPacket bye
                     = new RTCPBYEPacket(
-                            new int[] { ssrcTarget },
+                            new int[] { (int) ssrcTarget },
                             /* reason */ null);
                 RTCPCompoundPacket compound
                     = new RTCPCompoundPacket(new RTCPPacket[] { rr, bye });
@@ -198,7 +232,7 @@ class SsrcGroupRewriter
     /**
      * Gets the target SSRC that the rewritten RTP packets will have.
      */
-    public int getSSRCTarget()
+    public long getSSRCTarget()
     {
         return ssrcTarget;
     }
@@ -208,29 +242,70 @@ class SsrcGroupRewriter
      * rewriter appropriately. It then rewrites the <tt>RawPacket</tt> that is
      * passed in as a parameter using the active rewriter.
      *
-     * @param pkt the packet to rewrite
+     * @param p the packet to rewrite
      * @return the rewritten <tt>RawPacket</tt>
      */
-    public RawPacket rewriteRTP(final RawPacket pkt)
+    public RawPacket rewriteRTP(RawPacket p)
     {
-        if (pkt == null)
+        if (p == null)
         {
-            return pkt;
+            return p;
         }
 
-        maybeSwitchActiveRewriter(pkt);
+        maybeSwitchActiveRewriter(p);
 
         if (activeRewriter == null)
         {
             logger.warn(
                     "Can't rewrite the RTP packet because there's no active"
-                        + " rewriter.");
-            return pkt;
+                        + " rewriter." + " streamHashCode="
+                        + ssrcRewritingEngine.getMediaStream().hashCode());
         }
         else
         {
-            return activeRewriter.rewriteRTP(pkt);
+            // For the purposes of debugging, trace the rewriting of SSRC,
+            // sequence number, and RTP timestamp.
+            long ssrc0;
+            int seqnum0;
+            long ts0;
+
+            if (TRACE)
+            {
+                ssrc0 = p.getSSRCAsLong();
+                seqnum0 = p.getSequenceNumber();
+                ts0 = p.getTimestamp();
+            }
+            else
+            {
+                // Assign values so that the compiler does not complain that the
+                // local variables may be used without being initializaed. Do
+                // not read the actual values because the reads are not trivial.
+                ssrc0 = SsrcRewritingEngine.INVALID_SSRC;
+                seqnum0 = SsrcRewritingEngine.INVALID_SEQNUM;
+                ts0 = 0;
+            }
+
+            p = activeRewriter.rewriteRTP(p);
+
+            // For the purposes of debugging, trace the rewriting of SSRC,
+            // sequence number, and RTP timestamp.
+            if (TRACE && p != null)
+            {
+                boolean isKeyframe = isKeyFrame(p);
+                long ssrc1 = p.getSSRCAsLong();
+                int seqnum1 = p.getSequenceNumber();
+                long ts1 = p.getTimestamp();
+
+                logger.trace(
+                    "rewriteRTP ssrc=" + ssrc0 + ", seqnum=" + seqnum0
+                        + ", ts=" + ts0
+                        + ", new_ssrc=" + ssrc1 + ", new_seqnum=" + seqnum1
+                        + ", new_ts=" + ts1 + ", isKeyframe=" + isKeyframe
+                        + ", streamHashCode="
+                        + ssrcRewritingEngine.getMediaStream().hashCode());
+            }
         }
+        return p;
     }
 
     /**
@@ -241,19 +316,19 @@ class SsrcGroupRewriter
      */
     private void maybeSwitchActiveRewriter(final RawPacket pkt)
     {
-        final int sourceSSRC = pkt.getSSRC();
-        boolean debug = logger.isDebugEnabled();
+        final long sourceSSRC = pkt.getSSRCAsLong();
 
         // This "if" block is not thread-safe but we don't expect multiple
         // threads to access this block all at the same time.
         if (!rewriters.containsKey(sourceSSRC))
         {
-            if (debug)
+            if (DEBUG)
             {
                 logger.debug(
-                        "Creating an SSRC rewriter to rewrite "
-                            + pkt.getSSRCAsLong() + " to "
-                            + (ssrcTarget & 0xffffffffl));
+                        "Creating an SSRC rewriter. src_ssrc="
+                            + pkt.getSSRCAsLong() + ", dst_ssrc="
+                            + ssrcTarget + ", streamHashCode="
+                            + ssrcRewritingEngine.getMediaStream().hashCode());
             }
             rewriters.put(sourceSSRC, new SsrcRewriter(this, sourceSSRC));
         }
@@ -261,64 +336,69 @@ class SsrcGroupRewriter
         if (activeRewriter != null
                 && activeRewriter.getSourceSSRC() != sourceSSRC)
         {
-            // Got a packet with a different SSRC from the one that the
-            // current SsrcRewriter handles. Pause the current SsrcRewriter
-            // and switch to the correct one.
-            if (debug)
+            // Got a packet with a different SSRC from the one that the current
+            // SsrcRewriter handles. Pause the current SsrcRewriter and switch
+            // to the correct one.
+            if (DEBUG)
             {
-                logger.debug("Now rewriting " + pkt.getSSRCAsLong() + "/"
-                        + pkt.getSequenceNumber() + " to "
-                        + (ssrcTarget & 0xffffffffl) + " (was rewriting "
-                        + (activeRewriter.getSourceSSRC() & 0xffffffffl)
-                        + ").");
+                logger.debug(
+                        "Now rewriting new_ssrc=" + pkt.getSSRCAsLong()
+                            + ", seqnum=" + pkt.getSequenceNumber()
+                            + ", dst_ssrc=" + ssrcTarget + ", old_ssrc="
+                            + activeRewriter.getSourceSSRC()
+                            + ", streamHashCode="
+                            + ssrcRewritingEngine.getMediaStream().hashCode());
             }
 
-            // We don't have to worry about sequence number intervals that
-            // span multiple sequence number cycles because the extended
-            // sequence number interval length is 32 bits.
+            // We don't have to worry about sequence number intervals that span
+            // multiple sequence number cycles because the extended sequence
+            // number interval length is 32 bits.
             ExtendedSequenceNumberInterval currentInterval
                 = activeRewriter.getCurrentExtendedSequenceNumberInterval();
             int currentIntervalLength
                 = currentInterval == null ? 0 : currentInterval.length();
 
-            if (debug && currentIntervalLength < 1)
+            if (WARN && currentIntervalLength < 1)
             {
-                logger.debug(
+                logger.warn(
                         "Pausing an interval of length 0. This doesn't look"
-                            + " right.");
+                            + " right. streamHashCode="
+                            + ssrcRewritingEngine.getMediaStream().hashCode());
             }
 
-            // Pause the active rewriter (closes its current interval and
-            // puts it in the interval tree).
+            // Pause the active rewriter (closes its current interval and puts
+            // it in the interval tree).
             activeRewriter.pause();
 
-            // FIXME We're using logger.warn under the condition of debug bellow.
-            if (debug)
+            if (WARN)
             {
-                // We're only supposed to switch on key frames. Here we check
-                // if that's the case.
+                // We're only supposed to switch on key frames. Here we check if
+                // that's the case.
                 if (!isKeyFrame(pkt))
                 {
                     logger.warn(
-                            "We're switching NOT on a key frame. Bad Stuff (tm)"
-                                + " will happen to you!");
+                            "We're switching NOT on a key frame. seqnum="
+                            + pkt.getSequenceNumber() + ", streamHashCode="
+                            + ssrcRewritingEngine.getMediaStream().hashCode());
                 }
             }
 
             // Because {#currentExtendedSeqnumBase} is an extended sequence
-            // number, if we keep increasing it, it will eventually result
-            // in natural wrap around of the low 16 bits.
+            // number, if we keep increasing it, it will eventually result in
+            // natural wrap around of the low 16 bits.
             currentExtendedSeqnumBase += (currentIntervalLength + 1);
             activeRewriter = rewriters.get(sourceSSRC);
         }
 
         if (activeRewriter == null)
         {
-            if (debug)
+            if (DEBUG)
             {
                 logger.debug(
-                        "Now rewriting " + pkt.getSSRCAsLong() + " to "
-                            + (ssrcTarget & 0xffffffffl));
+                        "Now rewriting new_ssrc=" + pkt.getSSRCAsLong()
+                            + ", old_ssrc="
+                            + ssrcTarget + ", streamHashCode="
+                            + ssrcRewritingEngine.getMediaStream().hashCode());
             }
             // We haven't initialized yet.
             activeRewriter = rewriters.get(sourceSSRC);
@@ -328,7 +408,8 @@ class SsrcGroupRewriter
         {
             logger.warn(
                     "Don't know about SSRC " + pkt.getSSRCAsLong()
-                        + "! Somebody is messing with us!");
+                        + "! Somebody is messing with us! streamHashCode="
+                        + ssrcRewritingEngine.getMediaStream().hashCode());
         }
     }
 
@@ -341,8 +422,8 @@ class SsrcGroupRewriter
      */
     boolean isKeyFrame(RawPacket pkt)
     {
-        int sourceSSRC = pkt.getSSRC();
-        byte redPT = ssrcRewritingEngine.ssrc2red.get(sourceSSRC);
+        long sourceSSRC = pkt.getSSRCAsLong();
+        Byte redPT = ssrcRewritingEngine.ssrc2red.get(sourceSSRC);
         byte vp8PT = 0x64;
 
         return Utils.isKeyFrame(pkt, redPT, vp8PT);
@@ -359,14 +440,15 @@ class SsrcGroupRewriter
      * @return an integer that's either {#INVALID_SEQNUM} or a 16 bits
      * sequence number.
      */
-    int rewriteSequenceNumber(int ssrcOrigin, short seqnum)
+    int rewriteSequenceNumber(long ssrcOrigin, int seqnum)
     {
         SsrcRewriter rewriter = rewriters.get(ssrcOrigin);
         if (rewriter == null)
         {
             logger.warn(
-                    "An SSRC rewriter was not found for SSRC : "
-                        + (ssrcOrigin & 0xffffffffl));
+                    "An SSRC rewriter was not found. ssrc=" + ssrcOrigin
+                    + ", streamHashCode="
+                    + ssrcRewritingEngine.getMediaStream().hashCode());
             return SsrcRewritingEngine.INVALID_SEQNUM;
         }
 
@@ -377,8 +459,12 @@ class SsrcGroupRewriter
 
         if (retransmissionInterval == null)
         {
-            logger.warn("Could not find a retransmission interval for seqnum " +
-                    (seqnum & 0x0000ffff) + " from " + (ssrcOrigin & 0xffffffffl));
+            logger.warn(
+                    "Could not find a retransmission interval. seqnum="
+                        + seqnum + " ssrc="
+                        + ssrcOrigin + ", streamHashCode="
+                        + ssrcRewritingEngine.getMediaStream().hashCode());
+
             return SsrcRewritingEngine.INVALID_SEQNUM;
         }
         else
@@ -394,36 +480,101 @@ class SsrcGroupRewriter
     }
 
     /**
-     * Gets the {@code MediaStream} associated with this instance.
+     * Uplift the timestamp of a frame if we've already sent a larger
+     * timestamp to the remote endpoint.
      *
-     * @return the {@code MediaStream} associated with this instance
+     * @param p
      */
-    public MediaStream getMediaStream()
+    public void maybeUpliftTimestamp(RawPacket p)
     {
-        return ssrcRewritingEngine.getMediaStream();
-    }
+        // XXX Why do we need this? : When there's a stream switch, we request a
+        // keyframe for the stream we want to switch into (this is done
+        // elsewhere). The {@link SsrcRewriter} rewrites the timestamps of the
+        // "mixed" streams so that they all have the same timestamp offset. The
+        // problem still remains tho, frames can be sampled at different times,
+        // so we might end up with a key frame that is one sampling cycle behind
+        // what we were already streaming. We hack around this by implementing
+        // "RTP timestamp uplifting".
 
-    /**
-     * Gets the maximum RTP timestamp that we've sent to the remote endpoint.
-     *
-     * @return the maximum RTP timestamp that we've sent to the remote endpoint
-     */
-    public long getMaxTimestamp()
-    {
-        return maxTimestamp;
-    }
+        // XXX(gp): The uplifting should not take place if the
+        // timestamps have advanced "a lot" (i.e. > 3000 or 3000/90 = 33ms).
 
-    /**
-     * Sets the maximum RTP timestamp that we've sent to the remote endpoint.
-     *
-     * @param maxTimestamp the maximum RTP timestamp that we've sent to the
-     * remote endpoint
-     */
-    public void setMaxTimestamp(long maxTimestamp)
-    {
-        if (this.maxTimestamp < maxTimestamp)
+        long timestamp = p.getTimestamp();
+
+        if (maxTimestamp == -1) // Initialize maxTimestamp.
         {
-            this.maxTimestamp = maxTimestamp;
+            maxTimestamp = timestamp - 1;
         }
+
+        long minTimestamp = maxTimestamp + 1;
+        long delta = TimeUtils.rtpDiff(timestamp, minTimestamp);
+
+        if (delta < 0) /* minTimestamp is inclusive */
+        {
+            if (DEBUG)
+            {
+                logger.debug(
+                    "Uplifting RTP timestamp. old_ts=" + timestamp
+                        + ", seqnum=" + p.getSequenceNumber()
+                        + ", ssrc=" + p.getSSRCAsLong()
+                        + ", delta=" + delta + ", new_ts=" + minTimestamp
+                        + ", streamHashCode=" + ssrcRewritingEngine
+                        .getMediaStream().hashCode());
+            }
+
+            if (delta < -300000 && WARN)
+            {
+                // Bail-out. This is not supposed to happen because it means
+                // that more than one frame has to be uplifted, which means that
+                // we might be mis-rewriting the timestamps (since we're
+                // switching on neighboring frames and neighboring frames are
+                // sampled at similar instances).
+
+                logger.warn(
+                    "Uplifting a HIGHLY suspicious RTP timestamp old_ts="
+                        + timestamp + ", seqnum="
+                        + p.getSequenceNumber() + ", ssrc="
+                        + p.getSSRCAsLong() + ", delta=" + delta +
+                        ", new_ts" + minTimestamp
+                        + ", streamHashCode="
+                        + ssrcRewritingEngine.getMediaStream().hashCode());
+            }
+
+            p.setTimestamp(minTimestamp);
+            timestamp = minTimestamp;
+        }
+        else
+        {
+            // FIXME If the delta is >>> 3000 it could mean problems as well.
+        }
+
+        if (TimeUtils.rtpDiff(maxTimestamp, timestamp) < 0)
+        {
+            maxTimestamp = timestamp;
+        }
+    }
+
+    /**
+     * Gets the SSRC of the RTP stream into whose RTP timestamp other RTP
+     * streams are rewritten.
+     *
+     * @return the SSRC of the RTP stream into whose RTP timestamp other RTP
+     * streams are rewritten
+     */
+    long getTimestampSsrc()
+    {
+        return _timestampSsrc;
+    }
+
+    /**
+     * Sets the SSRC of the RTP stream into whose RTP timestamp other RTP
+     * streams are to be rewritten.
+     *
+     * @param timestampSsrc the SSRC of the RTP stream into whose RTP timestamp
+     * other RTP streams are to be rewritten
+     */
+    void setTimestampSsrc(long timestampSsrc)
+    {
+        _timestampSsrc = timestampSsrc;
     }
 }

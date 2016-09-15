@@ -19,8 +19,8 @@ import org.jitsi.impl.neomedia.*;
 import org.jitsi.service.configuration.*;
 import org.jitsi.service.libjitsi.*;
 import org.jitsi.service.neomedia.rtp.*;
-import org.jitsi.impl.neomedia.rtp.remotebitrateestimator.*;
 import org.jitsi.util.*;
+import org.jitsi.util.concurrent.*;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -48,7 +48,9 @@ public class CachingTransformer
      * <tt>CachingTransformer</tt> class and its instances.
      */
     private static final RecurringProcessibleExecutor
-        recurringProcessibleExecutor = new RecurringProcessibleExecutor();
+        recurringProcessibleExecutor
+            = new RecurringProcessibleExecutor(
+                    CachingTransformer.class.getSimpleName());
 
     /**
      * The <tt>ConfigurationService</tt> used to load caching configuration.
@@ -203,6 +205,12 @@ public class CachingTransformer
     private long lastUpdateTime = -1;
 
     /**
+     * The age in milliseconds of the oldest packet retrieved from any of the
+     * {@link Cache}s of this instance.
+     */
+    private MonotonicAtomicLong oldestHit = new MonotonicAtomicLong();
+
+    /**
      * {@inheritDoc}
      *
      * Transforms an outgoing packet.
@@ -226,14 +234,18 @@ public class CachingTransformer
         if (closed)
             return;
         closed = true;
-        logger.info("Closing. Maximum size reached: "
+        if (totalPacketsAdded.get() > 0)
+        {
+            logger.info("Closing. Maximum size reached: "
                             + maxSizeInBytes + " bytes, "
                             + maxSizeInPackets + " packets; "
                             + totalHits + " hits, "
                             + totalMisses + " misses ("
                             + (totalHits.get() + totalMisses.get())
                             + " total requests); "
-                            + totalPacketsAdded.get() + " total packets added.");
+                            + totalPacketsAdded.get() + " total packets added, "
+                            + "oldest hit " + oldestHit + "ms.");
+        }
 
         synchronized (caches)
         {
@@ -256,7 +268,10 @@ public class CachingTransformer
         RawPacket pkt = cache != null ? cache.get(seq) : null;
 
         if (pkt != null)
+        {
+            oldestHit.increase(cache.getAge(pkt));
             totalHits.incrementAndGet();
+        }
         else
             totalMisses.incrementAndGet();
 
@@ -631,6 +646,27 @@ public class CachingTransformer
             }
 
             cache.clear();
+        }
+
+        /**
+         * @return the age of {@code pkt} with respect to the latest added packet
+         * to the cache.
+         * @param pkt the packet whose age is to be returned.
+         */
+        synchronized private long getAge(RawPacket pkt)
+        {
+            if (cache.isEmpty())
+            {
+                return 0;
+            }
+
+            RawPacket head = cache.lastEntry().getValue();
+
+            long rtpDiff
+                = TimeUtils.rtpDiff(head.getTimestamp(), pkt.getTimestamp());
+
+            // Assume RTP clock rate of 90000.
+            return rtpDiff / 90;
         }
 
         /**

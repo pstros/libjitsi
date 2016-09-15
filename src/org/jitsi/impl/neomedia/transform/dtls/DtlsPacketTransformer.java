@@ -15,6 +15,7 @@
  */
 package org.jitsi.impl.neomedia.transform.dtls;
 
+import java.beans.*;
 import java.io.*;
 import java.security.*;
 import java.util.*;
@@ -28,6 +29,7 @@ import org.jitsi.service.configuration.*;
 import org.jitsi.service.libjitsi.*;
 import org.jitsi.service.neomedia.*;
 import org.jitsi.util.*;
+import org.jitsi.util.event.*;
 
 /**
  * Implements {@link PacketTransformer} for DTLS-SRTP. It's capable of working
@@ -205,11 +207,22 @@ public class DtlsPacketTransformer
      */
     private MediaType mediaType;
 
+    private final PropertyChangeListener propertyChangeListener
+        = new WeakReferencePropertyChangeListener(
+                new PropertyChangeListener()
+                {
+                    @Override
+                    public void propertyChange(PropertyChangeEvent ev)
+                    {
+                        DtlsPacketTransformer.this.propertyChange(ev);
+                    }
+                });
+
     /**
      * The {@code Queue} of SRTP {@code RawPacket}s which were received from the
      * remote while {@link #_srtpTransformer} was unavailable i.e. {@code null}.
      */
-    private final Queue<RawPacket> _reverseTransformSrtpQueue
+    private final LinkedList<RawPacket> _reverseTransformSrtpQueue
         = new LinkedList<>();
 
     /**
@@ -219,20 +232,18 @@ public class DtlsPacketTransformer
      * a DTLS session on its own, but rather wait for the RTP transformer to
      * do so, and reuse it to initialize the SRTP transformer.
      */
-    private boolean rtcpmux = false;
-
-    /**
-     * The value of the <tt>setup</tt> SDP attribute defined by RFC 4145
-     * &quot;TCP-Based Media Transport in the Session Description Protocol
-     * (SDP)&quot; which determines whether this instance acts as a DTLS client
-     * or a DTLS server.
-     */
-    private DtlsControl.Setup setup;
+    private boolean rtcpmux;
 
     /**
      * The {@code SRTPTransformer} (to be) used by this instance.
      */
     private SinglePacketTransformer _srtpTransformer;
+
+    /**
+     * The last time (in milliseconds since the epoch) that
+     * {@link #_srtpTransformer} was set to a non-{@code null} value.
+     */
+    private long _srtpTransformerLastChanged = -1;
 
     /**
      * The indicator which determines whether the <tt>TlsPeer</tt> employed by
@@ -246,7 +257,8 @@ public class DtlsPacketTransformer
      * The {@code Queue} of SRTP {@code RawPacket}s which were to be sent to the
      * remote while {@link #_srtpTransformer} was unavailable i.e. {@code null}.
      */
-    private final Queue<RawPacket> _transformSrtpQueue = new LinkedList<>();
+    private final LinkedList<RawPacket> _transformSrtpQueue
+        = new LinkedList<>();
 
     /**
      * The <tt>TransformEngine</tt> which has initialized this instance.
@@ -269,6 +281,11 @@ public class DtlsPacketTransformer
     {
         this.transformEngine = transformEngine;
         this.componentID = componentID;
+
+        // Track the DTLS properties which control the conditional behaviors of
+        // DtlsPacketTransformer.
+        getProperties().addPropertyChangeListener(propertyChangeListener);
+        propertyChange(/* propertyName */ (String) null);
     }
 
     /**
@@ -277,6 +294,8 @@ public class DtlsPacketTransformer
     @Override
     public synchronized void close()
     {
+        getProperties().removePropertyChangeListener(propertyChangeListener);
+
         // SrtpControl.start(MediaType) starts its associated TransformEngine.
         // We will use that mediaType to signal the normal stop then as well
         // i.e. we will call setMediaType(null) first.
@@ -367,6 +386,18 @@ public class DtlsPacketTransformer
     DtlsControlImpl getDtlsControl()
     {
         return getTransformEngine().getDtlsControl();
+    }
+
+    /**
+     * Gets the properties of {@link DtlsControlImpl} and their values which
+     * the associated {@code DtlsControlImpl} shares with this instance.
+     *
+     * @return the properties of {@code DtlsControlImpl} and their values which
+     * the associated {@code DtlsControlImpl} shares with this instance
+     */
+    Properties getProperties()
+    {
+        return getTransformEngine().getProperties();
     }
 
     /**
@@ -520,12 +551,9 @@ public class DtlsPacketTransformer
                 {
                     if (_srtpTransformer == null)
                     {
-                        _srtpTransformer
-                            = new SRTCPTransformer(
-                                    (SRTPTransformer) srtpTransformer);
-                        // For the sake of completeness, we notify whenever we
-                        // assign to _srtpTransformer.
-                        notifyAll();
+                        setSrtpTransformer(
+                                new SRTCPTransformer(
+                                        (SRTPTransformer) srtpTransformer));
                     }
                 }
             }
@@ -708,6 +736,18 @@ public class DtlsPacketTransformer
         return srtpTransformer;
     }
 
+    /**
+     * Determines whether this {@code DtlsPacketTransformer} is to operate in
+     * pure DTLS mode without SRTP extensions or in DTLS/SRTP mode.
+     *
+     * @return {@code true} for pure DTLS without SRTP extensions or
+     * {@code false} for DTLS/SRTP
+     */
+    private boolean isSrtpDisabled()
+    {
+        return getProperties().isSrtpDisabled();
+    }
+
     private synchronized void maybeStart()
     {
         if (this.mediaType != null && this.connector != null && !started)
@@ -734,7 +774,7 @@ public class DtlsPacketTransformer
             short alertLevel,
             short alertDescription,
             String message,
-            Exception cause)
+            Throwable cause)
     {
         if (AlertLevel.warning == alertLevel
                 && AlertDescription.close_notify == alertDescription)
@@ -743,10 +783,42 @@ public class DtlsPacketTransformer
         }
     }
 
+    private void propertyChange(PropertyChangeEvent ev)
+    {
+        propertyChange(ev.getPropertyName());
+    }
+
+    private void propertyChange(String propertyName)
+    {
+        // This DtlsPacketTransformer calls the method with null at construction
+        // time to initialize the respective states.
+        if (propertyName == null)
+        {
+            propertyChange(Properties.RTCPMUX_PNAME);
+            propertyChange(Properties.MEDIA_TYPE_PNAME);
+            propertyChange(Properties.CONNECTOR_PNAME);
+        }
+        else if (Properties.CONNECTOR_PNAME.equals(propertyName))
+        {
+            setConnector(
+                    (AbstractRTPConnector) getProperties().get(propertyName));
+        }
+        else if (Properties.MEDIA_TYPE_PNAME.equals(propertyName))
+        {
+            setMediaType((MediaType) getProperties().get(propertyName));
+        }
+        else if (Properties.RTCPMUX_PNAME.equals(propertyName))
+        {
+            Object newValue = getProperties().get(propertyName);
+
+            setRtcpmux((newValue == null) ? false : (Boolean) newValue);
+        }
+    }
+
     /**
      * Queues {@code RawPacket}s to be supplied to
-     * {@link #transformSrtp(SinglePacketTransformer, Collection, boolean, List)}
-     * when {@link #_srtpTransformer} becomes available.
+     * {@link #transformSrtp(SinglePacketTransformer, Collection, boolean, List,
+     * RawPacket)} when {@link #_srtpTransformer} becomes available.
      *
      * @param pkts the {@code RawPacket}s to queue
      * @param transform {@code true} if {@code pkts} are to be sent to the
@@ -786,123 +858,102 @@ public class DtlsPacketTransformer
     }
 
     /**
-     * Processes a DTLS {@code RawPacket} received from the remote peer.
+     * Processes a DTLS {@code RawPacket} received from the remote peer, and
+     * reads any available application data into {@code outPkts}.
      *
      * @param pkt the DTLS {@code RawPacket} received from the remote peer to
-     * process
-     * @param buf the {@code buffer} of {@code pkt}. Provided explicitly because
-     * it has been retrieved already.
-     * @param off the offset in {@code buf} at which the DTLS packet begins.
-     * Provided explicitly because it has been retrieved already.
-     * @param len the length in {@code byte}s of the DTLS packet in {@code buf}.
-     * Provided explicitly because it has been retrieved already.
-     * @return the processed DTLS {@code RawPacket} received from the remote
-     * peer. If {@code pkt} was completely consumed for the purposes of setting
-     * the DTLS session with the remote peer up, returns {@code null}. However,
-     * {@code null} may be returned if the processing of {@code pkt} failed.
+     * process.
+     * @param outPkts a list of packets, to which application data read from
+     * the DTLS transport should be appended. If {@code null}, application data
+     * will not be read.
      */
-    private RawPacket reverseTransformDtls(
-            RawPacket pkt,
-            byte[] buf, int off, int len)
+    private void reverseTransformDtls(RawPacket pkt, List<RawPacket> outPkts)
     {
         if (rtcpmux && Component.RTCP == componentID)
         {
             // This should never happen.
             logger.warn(
-                    "Dropping a DTLS record, because it was received on the"
+                    "Dropping a DTLS packet, because it was received on the"
                         + " RTCP channel while rtcpmux is in use.");
-            return null;
+            return;
         }
 
-        boolean receive;
-
+        // First, make the input packet available for bouncycastle to read.
         synchronized (this)
         {
             if (datagramTransport == null)
             {
-                receive = false;
+                logger.warn(
+                        "Dropping a DTLS packet. This DtlsPacketTransformer has"
+                            + " not been started successfully or has been"
+                            + " closed.");
             }
             else
             {
-                datagramTransport.queueReceive(buf, off, len);
-                receive = true;
+                datagramTransport.queueReceive(
+                        pkt.getBuffer(), pkt.getOffset(), pkt.getLength());
             }
         }
-        if (receive)
-        {
-            DTLSTransport dtlsTransport = this.dtlsTransport;
 
-            if (dtlsTransport == null)
+        if (outPkts == null)
+        {
+            return;
+        }
+
+        // Next, try to read any available application data from bouncycastle.
+        DTLSTransport dtlsTransport = this.dtlsTransport;
+
+        if (dtlsTransport == null)
+        {
+            // The DTLS transport hasn't initialized yet.
+        }
+        else
+        {
+            // There might be more than one packet queued in datagramTransport,
+            // if they were added prior to dtlsTransport being initialized. Read
+            // all of them.
+            try
             {
-                // The specified pkt looks like a DTLS record and it has been
-                // consumed for the purposes of the secure channel represented
-                // by this PacketTransformer.
-                pkt = null;
-            }
-            else
-            {
-                try
+                do
                 {
                     int receiveLimit = dtlsTransport.getReceiveLimit();
-                    int delta = receiveLimit - len;
-
-                    if (delta > 0)
-                    {
-                        pkt.grow(delta);
-                        buf = pkt.getBuffer();
-                        off = pkt.getOffset();
-                        len = pkt.getLength();
-                    }
-                    else if (delta < 0)
-                    {
-                        pkt.shrink(-delta);
-                        buf = pkt.getBuffer();
-                        off = pkt.getOffset();
-                        len = pkt.getLength();
-                    }
+                    // FIXME This is at best inefficient, but it is not meant as
+                    // a long-term solution. A major refactoring is planned,
+                    // which will probably make this code obsolete.
+                    byte[] buf = new byte[receiveLimit];
+                    RawPacket p = new RawPacket(buf, 0, buf.length);
 
                     int received
                         = dtlsTransport.receive(
-                                buf, off, len,
+                                buf, 0, buf.length,
                                 DTLS_TRANSPORT_RECEIVE_WAITMILLIS);
 
                     if (received <= 0)
                     {
-                        // No application data was decoded.
-                        pkt = null;
+                        // No (more) application data was decoded.
+                        break;
                     }
                     else
                     {
-                        delta = len - received;
-                        if (delta > 0)
-                            pkt.shrink(delta);
+                        p.setLength(received);
+                        outPkts.add(p);
                     }
                 }
-                catch (IOException ioe)
+                while (true);
+            }
+            catch (IOException ioe)
+            {
+                // SrtpControl.start(MediaType) starts its associated
+                // TransformEngine. We will use that mediaType to signal the
+                // normal stop then as well i.e. we will ignore exception after
+                // the procedure to stop this PacketTransformer has begun.
+                if (mediaType != null
+                        && !tlsPeerHasRaisedCloseNotifyWarning)
                 {
-                    pkt = null;
-                    // SrtpControl.start(MediaType) starts its associated
-                    // TransformEngine. We will use that mediaType to signal the
-                    // normal stop then as well i.e. we will ignore exception
-                    // after the procedure to stop this PacketTransformer
-                    // has begun.
-                    if (mediaType != null
-                            && !tlsPeerHasRaisedCloseNotifyWarning)
-                    {
-                        logger.error("Failed to decode a DTLS record!", ioe);
-                    }
+                    logger.error("Failed to decode a DTLS record!", ioe);
                 }
             }
         }
-        else
-        {
-            // The specified pkt looks like a DTLS record but it is unexpected
-            // in the current state of the secure channel represented by this
-            // PacketTransformer. This PacketTransformer has not been started
-            // (successfully) or has been closed.
-            pkt = null;
-        }
-        return pkt;
     }
 
     /**
@@ -918,7 +969,7 @@ public class DtlsPacketTransformer
             DatagramTransport datagramTransport)
     {
         DTLSTransport dtlsTransport = null;
-        final boolean srtp = !transformEngine.isSrtpDisabled();
+        final boolean srtp = !isSrtpDisabled();
         int srtpProtectionProfile = 0;
         TlsContext tlsContext = null;
 
@@ -1013,8 +1064,7 @@ public class DtlsPacketTransformer
                     && datagramTransport.equals(this.datagramTransport))
             {
                 this.dtlsTransport = dtlsTransport;
-                _srtpTransformer = srtpTransformer;
-                notifyAll();
+                setSrtpTransformer(srtpTransformer);
             }
             closeSRTPTransformer = (_srtpTransformer != srtpTransformer);
         }
@@ -1072,11 +1122,12 @@ public class DtlsPacketTransformer
      * @param connector the <tt>RTPConnector</tt> which is to use or uses this
      * <tt>PacketTransformer</tt>
      */
-    void setConnector(AbstractRTPConnector connector)
+    private void setConnector(AbstractRTPConnector connector)
     {
         if (this.connector != connector)
         {
             AbstractRTPConnector oldValue = this.connector;
+
             this.connector = connector;
 
             DatagramTransportImpl datagramTransport = this.datagramTransport;
@@ -1096,7 +1147,7 @@ public class DtlsPacketTransformer
      * @param mediaType the <tt>MediaType</tt> of the stream which this instance
      * is to work for/be associated with
      */
-    synchronized void setMediaType(MediaType mediaType)
+    private synchronized void setMediaType(MediaType mediaType)
     {
         if (this.mediaType != mediaType)
         {
@@ -1113,7 +1164,9 @@ public class DtlsPacketTransformer
 
     /**
      * Enables/disables rtcp-mux.
-     * @param rtcpmux whether to enable or disable.
+     *
+     * @param rtcpmux {@code true} to enable rtcp-mux or {@code false} to
+     * disable it.
      */
     void setRtcpmux(boolean rtcpmux)
     {
@@ -1121,18 +1174,22 @@ public class DtlsPacketTransformer
     }
 
     /**
-     * Sets the DTLS protocol according to which this
-     * <tt>DtlsPacketTransformer</tt> is to act either as a DTLS server or a
-     * DTLS client.
+     * Sets {@link #_srtpTransformer} to a specific value.
      *
-     * @param setup the value of the <tt>setup</tt> SDP attribute to set on this
-     * instance in order to determine whether this instance is to act as a DTLS
-     * client or a DTLS server
+     * @param srtpTransformer the {@code SinglePacketTransformer} to set on
+     * {@code _srtpTransformer}
      */
-    void setSetup(DtlsControl.Setup setup)
+    private synchronized void setSrtpTransformer(
+            SinglePacketTransformer srtpTransformer)
     {
-        if (this.setup != setup)
-            this.setup = setup;
+        if (_srtpTransformer != srtpTransformer)
+        {
+            _srtpTransformer = srtpTransformer;
+            _srtpTransformerLastChanged = System.currentTimeMillis();
+            // For the sake of completeness, we notify whenever we assign to
+            // _srtpTransformer.
+            notifyAll();
+        }
     }
 
     /**
@@ -1167,19 +1224,18 @@ public class DtlsPacketTransformer
         if (connector == null)
             throw new NullPointerException("connector");
 
-        DtlsControl.Setup setup = this.setup;
-        SecureRandom secureRandom = DtlsControlImpl.createSecureRandom();
+        DtlsControl.Setup setup = getProperties().getSetup();
         final DTLSProtocol dtlsProtocolObj;
         final TlsPeer tlsPeer;
 
         if (DtlsControl.Setup.ACTIVE.equals(setup))
         {
-            dtlsProtocolObj = new DTLSClientProtocol(secureRandom);
+            dtlsProtocolObj = new DTLSClientProtocol(new SecureRandom());
             tlsPeer = new TlsClientImpl(this);
         }
         else
         {
-            dtlsProtocolObj = new DTLSServerProtocol(secureRandom);
+            dtlsProtocolObj = new DTLSServerProtocol(new SecureRandom());
             tlsPeer = new TlsServerImpl(this);
         }
         tlsPeerHasRaisedCloseNotifyWarning = false;
@@ -1362,18 +1418,19 @@ public class DtlsPacketTransformer
                 {
                     // In the outgoing/transform direction DTLS records pass
                     // through (e.g. DatagramTransportImpl has sent them).
-                    RawPacket outPkt
-                        = transform
-                            ? inPkt
-                            : reverseTransformDtls(inPkt, buf, off, len);
+                    if (transform)
+                    {
+                        outPkts.add(inPkt);
+                    }
+                    else
+                    {
+                        reverseTransformDtls(inPkt, outPkts);
+                    }
 
                     // Whatever the outcome, inPkt has been consumed. The
                     // following is being done because there may be a subsequent
                     // iteration over inPkts later on.
                     inPkts[i] = null;
-
-                    if (outPkt != null)
-                        outPkts.add(outPkt);
                 }
             }
         }
@@ -1402,7 +1459,7 @@ public class DtlsPacketTransformer
             boolean transform,
             List<RawPacket> outPkts)
     {
-        /* Pure/non-SRTP DTLS */ if (transformEngine.isSrtpDisabled())
+        /* Pure/non-SRTP DTLS */ if (isSrtpDisabled())
         {
             // (1) In the incoming/reverseTransform direction, only DTLS records
             // pass through.
@@ -1490,21 +1547,48 @@ public class DtlsPacketTransformer
         {
             // Process the (SRTP) packets provided to earlier (method)
             // invocations during which _srtpTransformer was unavailable.
-            Collection<RawPacket> q
+            LinkedList<RawPacket> q
                 = transform ? _transformSrtpQueue : _reverseTransformSrtpQueue;
 
-            synchronized (q)
+            // XXX Don't obtain a lock if the queue is empty. If a thread was in
+            // the process of adding packets to it, they will be handled in a
+            // subsequent call. If the queue is empty, as it usually is, the
+            // call to transformSrtp below is unnecessary, so we can avoid the
+            // lock.
+            if (q.size() > 0)
             {
-                try
+                synchronized (q)
                 {
-                    outPkts
-                        = transformSrtp(srtpTransformer, q, transform, outPkts);
-                }
-                finally
-                {
-                    // If a RawPacket from q causes an exception, do not attempt
-                    // to process it next time.
-                    q.clear();
+                    // WARNING: this is a temporary workaround for an issue we
+                    // have observed in which a DtlsPacketTransformer is shared
+                    // between multiple MediaStream instances and the packet
+                    // queue contains packets belonging to both. We try to
+                    // recognize the packets belonging to each MediaStream by
+                    // their RTP SSRC or RTP payload type, and pull only these
+                    // packets into the output array. We use the input packet
+                    // (or rather the first input packet) as a template, because
+                    // it comes from the MediaStream which called us.
+                    RawPacket template
+                        = (inPkts != null && inPkts.length > 0)
+                            ? inPkts[0]
+                            : null;
+
+                    try
+                    {
+                        outPkts
+                            = transformSrtp(
+                                    srtpTransformer,
+                                    q,
+                                    transform,
+                                    outPkts,
+                                    template);
+                    }
+                    finally
+                    {
+                        // If a RawPacket from q causes an exception, do not
+                        // attempt to process it next time.
+                        clearQueue(q, template);
+                    }
                 }
             }
 
@@ -1517,7 +1601,8 @@ public class DtlsPacketTransformer
                             srtpTransformer,
                             Arrays.asList(inPkts),
                             transform,
-                            outPkts);
+                            outPkts,
+                            /* template */ null);
             }
         }
         return outPkts;
@@ -1537,6 +1622,9 @@ public class DtlsPacketTransformer
      * the remote peer
      * @param outPkts the {@code List} of {@code RawPacket}s into which the
      * results of the processing of {@code inPkts} are to be written
+     * @param template A template to match input packets. Only input packets
+     * matching this template (checked with {@link #match(RawPacket, RawPacket)})
+     * will be processed. A null template matches all packets.
      * @return the {@code List} of {@code RawPacket}s which are the result of
      * the processing including the elements of {@code outPkts}. Practically,
      * {@code outPkts} itself.
@@ -1545,11 +1633,12 @@ public class DtlsPacketTransformer
             SinglePacketTransformer srtpTransformer,
             Collection<RawPacket> inPkts,
             boolean transform,
-            List<RawPacket> outPkts)
+            List<RawPacket> outPkts,
+            RawPacket template)
     {
         for (RawPacket inPkt : inPkts)
         {
-            if (inPkt != null)
+            if (inPkt != null && match(template, inPkt))
             {
                 RawPacket outPkt
                     = transform
@@ -1561,5 +1650,72 @@ public class DtlsPacketTransformer
             }
         }
         return outPkts;
+    }
+
+    /**
+     * Removes from {@code q} all packets matching {@code template} (checked
+     * with {@link #match(RawPacket, RawPacket)}. A null {@code template}
+     * matches all packets.
+     *
+     * @param q the queue to remove packets from.
+     * @param template the template
+     */
+    private void clearQueue(LinkedList<RawPacket> q, RawPacket template)
+    {
+        long srtpTransformerLastChanged = _srtpTransformerLastChanged;
+
+        if (srtpTransformerLastChanged >= 0
+                && System.currentTimeMillis() - srtpTransformerLastChanged
+                    > 3000)
+        {
+            // The purpose of these queues is to queue packets while DTLS is in
+            // the process of establishing a connection. If some of the packets
+            // were not "read" 3 seconds after DTLS finished, they can safely be
+            // dropped, and we do so to avoid looping through the queue on every
+            // subsequent packet.
+            q.clear();
+            return;
+        }
+
+        for (Iterator<RawPacket> it = q.iterator(); it.hasNext();)
+        {
+            if (match(template, it.next()))
+                it.remove();
+        }
+    }
+
+    /**
+     * Checks whether {@code pkt} matches the template {@code template}. A
+     * {@code null} template matches all packets, while a {@code null} packet
+     * will only be matched by a {@code null} template. Two non-{@code null}
+     * packets match if they are both RTP or both RTCP and they have the same
+     * SSRC or the same RTP Payload Type. The goal is for a template packet from
+     * one {@code MediaStream} to match the packets for that stream, and only
+     * these packets.
+     *
+     * @param template the template.
+     * @param pkt the packet.
+     * @return {@code true} if {@code template} matches {@code pkt} (i.e. they
+     * have the same SSRC or RTP Payload Type).
+     */
+    private boolean match(RawPacket template, RawPacket pkt)
+    {
+        if (template == null)
+            return true;
+        if (pkt == null)
+            return false;
+
+        if (RTPPacketPredicate.INSTANCE.test(template))
+        {
+            return
+                template.getSSRC() == pkt.getSSRC()
+                    || template.getPayloadType() == pkt.getPayloadType();
+        }
+        else if (RTCPPacketPredicate.INSTANCE.test(template))
+        {
+            return template.getRTCPSSRC() == pkt.getRTCPSSRC();
+        }
+
+        return true;
     }
 }

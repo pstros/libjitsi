@@ -19,6 +19,7 @@ import java.beans.*;
 import java.util.*;
 import org.jitsi.impl.neomedia.*;
 import org.jitsi.impl.neomedia.rtcp.termination.strategies.*;
+import org.jitsi.impl.neomedia.transform.*;
 import org.jitsi.service.neomedia.format.*;
 
 /**
@@ -56,6 +57,12 @@ public abstract class AbstractMediaStream
      * and modify RTCP traffic between multiple {@code MediaStream}s.
      */
     private RTCPTerminationStrategy rtcpTerminationStrategy;
+
+    /**
+     * The <tt>RTPTranslator</tt>, if any, which forwards RTP and RTCP traffic
+     * between this and other <tt>MediaStream</tt>s.
+     */
+    protected RTPTranslator rtpTranslator;
 
     /**
      * Adds a <tt>PropertyChangelistener</tt> to this stream which is to be
@@ -242,5 +249,47 @@ public abstract class AbstractMediaStream
 
             this.rtcpTerminationStrategy = rtcpTerminationStrategy;
         }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void setRTPTranslator(RTPTranslator rtpTranslator)
+    {
+        if (this.rtpTranslator != rtpTranslator)
+            this.rtpTranslator = rtpTranslator;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public RTPTranslator getRTPTranslator()
+    {
+        return rtpTranslator;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public TransformEngineChain getTransformEngineChain()
+    {
+        return null;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void configureSSRCRewriting(
+        Set<Long> ssrcGroup,
+        Long ssrcTargetPrimary,
+        Map<Long, Byte> ssrc2fec,
+        Map<Long, Byte> ssrc2red,
+        Map<Long, Long> rtxGroups,
+        Long ssrcTargetRTX)
+    {
     }
 }
