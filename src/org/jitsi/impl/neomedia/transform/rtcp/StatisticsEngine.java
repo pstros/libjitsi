@@ -29,6 +29,7 @@ import org.jitsi.impl.neomedia.*;
 import org.jitsi.impl.neomedia.device.*;
 import org.jitsi.impl.neomedia.rtcp.*;
 import org.jitsi.impl.neomedia.rtp.translator.*;
+import org.jitsi.impl.neomedia.stats.*;
 import org.jitsi.impl.neomedia.transform.*;
 import org.jitsi.service.neomedia.*;
 import org.jitsi.service.neomedia.codec.*;
@@ -116,11 +117,6 @@ public class StatisticsEngine
     }
 
     /**
-     * Number of lost packets reported.
-     */
-    private long lost = 0;
-
-    /**
      * The minimum inter arrival jitter value we have reported, in RTP timestamp
      * units.
      */
@@ -145,24 +141,15 @@ public class StatisticsEngine
 
     /**
      * The number of RTCP sender reports (SR) and/or receiver reports (RR) sent.
+     * Mapped per ssrc.
      */
-    private long numberOfRTCPReports = 0;
+    private final Map<Long,Long> numberOfRTCPReportsMap = new HashMap<>();
 
     /**
      * The sum of the jitter values we have reported in RTCP reports, in RTP
      * timestamp units.
      */
-    private long jitterSum = 0;
-
-    /**
-     * The number of RTP packets sent though this instance.
-     */
-    private long rtpPacketsSent = 0;
-
-    /**
-     * The number of RTP packets sent though this instance.
-     */
-    private long rtpPacketsReceived = 0;
+    private final Map<Long,Long> jitterSumMap = new HashMap<>();
 
     /**
      * The {@link RTCPPacketParserEx} which this instance will use to parse
@@ -177,26 +164,14 @@ public class StatisticsEngine
     private RTCPGenerator generator = new RTCPGenerator();
 
     /**
-     * The <tt>PacketTransformer</tt> instance to use for RTP. It only counts
-     * packets.
+     * The <tt>PacketTransformer</tt> instance to use for RTP.
      */
-    private final PacketTransformer rtpTransformer
-            = new SinglePacketTransformer(RTPPacketPredicate.INSTANCE)
-    {
-        @Override
-        public RawPacket transform(RawPacket pkt)
-        {
-            StatisticsEngine.this.rtpPacketsSent++;
-            return pkt;
-        }
+    private final PacketTransformer rtpTransformer = new RTPPacketTransformer();
 
-        @Override
-        public RawPacket reverseTransform(RawPacket pkt)
-        {
-            StatisticsEngine.this.rtpPacketsReceived++;
-            return pkt;
-        }
-    };
+    /**
+     * The {@link MediaStreamStats2Impl} of the {@link MediaStream}.
+     */
+    private final MediaStreamStats2Impl mediaStreamStats;
 
     /**
      * Creates Statistic engine.
@@ -208,7 +183,8 @@ public class StatisticsEngine
         // RTCPPacketPredicate in place.
         super(RTCPPacketPredicate.INSTANCE);
 
-        this.mediaStream = stream;
+        mediaStream = stream;
+        mediaStreamStats = stream.getMediaStreamStats();
 
         mediaType = this.mediaStream.getMediaType();
     }
@@ -433,16 +409,6 @@ public class StatisticsEngine
         }
 
         return rtcpXRs;
-    }
-
-    /**
-     * Close the transformer and underlying transform engine.
-     *
-     * Nothing to do here.
-     */
-    @Override
-    public void close()
-    {
     }
 
     /**
@@ -806,15 +772,6 @@ public class StatisticsEngine
     }
 
     /**
-     * Number of lost packets reported.
-     * @return number of lost packets reported.
-     */
-    public long getLost()
-    {
-        return lost;
-    }
-
-    /**
      * The minimum inter arrival jitter value we have reported.
      * @return minimum inter arrival jitter value we have reported.
      */
@@ -829,6 +786,9 @@ public class StatisticsEngine
      */
     public double getAvgInterArrivalJitter()
     {
+        long numberOfRTCPReports = getCumulativeValue(numberOfRTCPReportsMap);
+        long jitterSum = getCumulativeValue(jitterSumMap);
+
         return
             numberOfRTCPReports == 0
                 ? 0
@@ -932,6 +892,9 @@ public class StatisticsEngine
         // SRTP may send non-RTCP packets.
         if (isRTCP(pkt))
         {
+            mediaStreamStats.rtcpPacketReceived(
+                pkt.getRTCPSSRCAsLong(), pkt.getLength());
+
             RTCPCompoundPacket compound;
             Exception ex;
 
@@ -1128,6 +1091,8 @@ public class StatisticsEngine
         // SRTP may send non-RTCP packets.
         if (isRTCP(pkt))
         {
+            mediaStreamStats.rtcpPacketSent(pkt.getRTCPSSRCAsLong(),
+                                            pkt.getLength());
             try
             {
                 updateSentMediaStreamStats(pkt);
@@ -1210,24 +1175,26 @@ public class StatisticsEngine
 
             if(!feedbackReports.isEmpty())
             {
-                RTCPFeedback feedback
-                        = (RTCPFeedback) feedbackReports.get(0);
+                RTCPFeedback feedback = (RTCPFeedback) feedbackReports.get(0);
+                long ssrc = feedback.getSSRC();
                 long jitter = feedback.getJitter();
 
-                numberOfRTCPReports++;
+                incrementSSRCCounter(numberOfRTCPReportsMap, ssrc, 1);
 
-                if ((jitter < getMinInterArrivalJitter())
-                        || (getMinInterArrivalJitter() == -1))
+                if (jitter < getMinInterArrivalJitter()
+                        || getMinInterArrivalJitter() == -1)
+                {
                     minInterArrivalJitter = jitter;
+                }
                 if (getMaxInterArrivalJitter() < jitter)
                     maxInterArrivalJitter = jitter;
 
-                jitterSum += jitter;
-
-                lost = feedback.getNumLost();
+                incrementSSRCCounter(jitterSumMap, ssrc, jitter);
 
                 if(logger.isTraceEnabled())
                 {
+                    long numberOfRTCPReports
+                        = getMapValue(numberOfRTCPReportsMap, ssrc);
                     // As sender reports are sent on every 5 seconds, print
                     // every 4th packet, on every 20 seconds.
                     if(numberOfRTCPReports % 4 == 1)
@@ -1237,25 +1204,23 @@ public class StatisticsEngine
                             = (mediaType == null) ? "" : mediaType.toString();
 
                         buff.append("Sending a report for ")
-                                .append(mediaTypeStr)
-                            .append(" stream SSRC:").append(feedback.getSSRC())
-                            .append(" [");
+                            .append(mediaTypeStr).append(" stream SSRC:")
+                            .append(ssrc).append(" [");
                         // SR includes sender info, RR does not.
                         if (r instanceof RTCPSenderReport)
                         {
                             RTCPSenderReport sr = (RTCPSenderReport) r;
 
                             buff.append("packet count:")
-                                    .append(sr.getSenderPacketCount())
+                                .append(sr.getSenderPacketCount())
                                 .append(", bytes:")
-                                    .append(sr.getSenderByteCount())
-                                .append(", ");
+                                .append(sr.getSenderByteCount()).append(", ");
                         }
                         buff.append("interarrival jitter:").append(jitter)
                             .append(", lost packets:")
-                                .append(feedback.getNumLost())
+                            .append(feedback.getNumLost())
                             .append(", time since previous report:")
-                                .append((int) (feedback.getDLSR() / 65.536))
+                            .append((int) (feedback.getDLSR() / 65.536))
                             .append("ms]");
                         logger.trace(buff);
                     }
@@ -1265,20 +1230,86 @@ public class StatisticsEngine
     }
 
     /**
-     * Gets the number of RTP packets sent though this instance.
-     * @return the number of RTP packets sent though this instance.
+     * Computes the sum of the values of a specific {@code Map} with
+     * {@code Long} values.
+     *
+     * @param map the {@code Map} with {@code Long} values to sum up
+     * @return the sum of the values of the specified {@code map}
      */
-    public long getRtpPacketsSent()
+    private static long getCumulativeValue(Map<?,Long> map)
     {
-        return rtpPacketsSent;
+        long cumulativeValue = 0;
+
+        for (Long value : map.values())
+        {
+            if(value == null)
+                continue;
+
+            cumulativeValue += value;
+        }
+        return cumulativeValue;
     }
 
     /**
-     * Gets the number of RTP packets received though this instance.
-     * @return the number of RTP packets received though this instance.
+     * Utility method to return a value from a map and perform unboxing only if
+     * the result value is not null.
+     * @param map the map to get the value
+     * @param ssrc the key
+     * @return the result value or 0 if nothing is found.
      */
-    public long getRtpPacketsReceived()
+    private static long getMapValue(Map<?,Long> map, long ssrc)
     {
-        return rtpPacketsReceived;
+        // there can be no entry, or the value can be null
+        Long res = map.get(ssrc);
+        return res == null ? 0 : res;
+    }
+
+    /**
+     * Utility method to increment map value with specified step. If entry is
+     * missing add it.
+     *
+     * @param map the map holding the values
+     * @param ssrc the key of the value to increment
+     * @param step increment step value
+     */
+    private static void incrementSSRCCounter(
+            Map<Long,Long> map,
+            long ssrc,
+            long step)
+    {
+        Long count = map.get(ssrc);
+
+        map.put(ssrc, (count == null) ? step : (count + step));
+    }
+
+    private class RTPPacketTransformer
+        extends SinglePacketTransformerAdapter
+    {
+        private RTPPacketTransformer()
+        {
+            super(RTPPacketPredicate.INSTANCE);
+        }
+
+        @Override
+        public RawPacket transform(RawPacket pkt)
+        {
+            mediaStreamStats.rtpPacketSent(
+                pkt.getSSRCAsLong(),
+                pkt.getSequenceNumber(),
+                pkt.getLength());
+
+            return pkt;
+        }
+
+        @Override
+        public RawPacket reverseTransform(RawPacket pkt)
+        {
+            mediaStreamStats.rtpPacketReceived(
+                pkt.getSSRCAsLong(),
+                pkt.getSequenceNumber(),
+                pkt.getLength());
+
+            return pkt;
+        }
     }
 }

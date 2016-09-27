@@ -27,6 +27,9 @@ package org.jitsi.impl.neomedia;
  * Besides packet info storage, RawPacket also provides some other operations
  * such as readInt() to ease the development process.
  *
+ * FIXME This class needs to be split/merged into RTPHeader, RTCPHeader,
+ * ByteBufferUtils, etc.
+ *
  * @author Werner Dittmann (Werner.Dittmann@t-online.de)
  * @author Bing SU (nova.su@gmail.com)
  * @author Emil Ivov
@@ -56,7 +59,7 @@ public class RawPacket
      * The bitmap/flag mask that specifies the set of boolean attributes enabled
      * for this <tt>RawPacket</tt>. The value is the logical sum of all of the
      * set flags. The possible flags are defined by the <tt>FLAG_XXX</tt>
-     * constants of FMJ's {@link Buffer} class.
+     * constants of FMJ's {@link javax.media.Buffer} class.
      */
     private int flags;
 
@@ -109,27 +112,33 @@ public class RawPacket
      */
     public void addExtension(byte[] extBuff, int newExtensionLen)
     {
-        int newBuffLen = length + offset + newExtensionLen;
         int bufferOffset = offset;
-        int newBufferOffset = offset;
-        int lengthToCopy = FIXED_HEADER_SIZE + getCsrcCount()*4;
+        int newBufferOffset = 0;
         boolean extensionBit = getExtensionBit();
-        //if there was no extension previously, we also need to consider adding
-        //the extension header.
+        int payloadOffset = getPayloadOffset();
+        int payloadLength = getPayloadLength();
+        int existingExtensionLength = getExtensionLength();
+        int extraBytes = newExtensionLen + (extensionBit ? 0 : EXT_HEADER_SIZE);
+        int newPayloadOffset = payloadOffset - offset + extraBytes;
+        int newBuffLen = length + extraBytes;
+        int lengthToCopy = FIXED_HEADER_SIZE + getCsrcCount()*4;
+
         if (extensionBit)
         {
             // without copying the extension length value, will set it later
             lengthToCopy += EXT_HEADER_SIZE - 2;
         }
-        else
-            newBuffLen += EXT_HEADER_SIZE;
 
-        byte[] newBuffer = new byte[ newBuffLen ];
+        // Warning: newBuffer may be the same byte[] as buffer. This must be
+        // taken into account while copying or writing to newBuffer below.
+        byte[] newBuffer = buffer;
+        if (newBuffer.length < newBuffLen)
+        {
+            newBuffer = new byte[newBuffLen];
+        }
 
-        /*
-         * Copy header, CSRC list and the leading two bytes of the extension
-         * header if any.
-         */
+        // Copy the header, CSRC list and the leading two bytes of the
+        // extension header if any.
         System.arraycopy(buffer, bufferOffset,
             newBuffer, newBufferOffset, lengthToCopy);
         //raise the extension bit.
@@ -137,11 +146,17 @@ public class RawPacket
         bufferOffset += lengthToCopy;
         newBufferOffset += lengthToCopy;
 
+        // Copy the payload first, because parts of it may end up being
+        // overwritten if this.buffer is reused.
+        System.arraycopy(buffer, payloadOffset,
+                         newBuffer, newPayloadOffset,
+                         payloadLength);
+
         // Set the extension header or modify the existing one.
-        int totalExtensionLen = newExtensionLen + getExtensionLength();
+        int totalExtensionLen = newExtensionLen + existingExtensionLength;
 
         //if there were no extensions previously, we need to add the hdr now
-        if(extensionBit)
+        if (extensionBit)
         {
             // We've copied "defined by profile" already. Consequently, we have
             // to skip the length only.
@@ -155,7 +170,7 @@ public class RawPacket
            //  0                   1                   2                   3
            //  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
            // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-           // |       0xBE    |    0xDE       |           length=3            |
+           // |       0xBE    |    0xDE       |           length              |
            // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
            newBuffer[newBufferOffset++] = (byte)0xBE;
            newBuffer[newBufferOffset++] = (byte)0xDE;
@@ -168,7 +183,7 @@ public class RawPacket
         // Copy the existing extension content if any.
         if (extensionBit)
         {
-            lengthToCopy = getExtensionLength();
+            lengthToCopy = existingExtensionLength;
             System.arraycopy(buffer, bufferOffset,
                 newBuffer, newBufferOffset, lengthToCopy);
             bufferOffset += lengthToCopy;
@@ -178,19 +193,10 @@ public class RawPacket
         //copy the extension content from the new extension.
         System.arraycopy(extBuff, 0,
             newBuffer, newBufferOffset, newExtensionLen);
-        newBufferOffset += newExtensionLen;
-
-        //now copy the payload
-        int payloadLength = getPayloadLength();
-
-        System.arraycopy(
-                buffer, bufferOffset,
-                newBuffer, newBufferOffset,
-                payloadLength);
-        newBufferOffset += payloadLength;
 
         buffer = newBuffer;
-        this.length = newBufferOffset - offset;
+        this.length = this.length + extraBytes;
+        this.offset = 0;
     }
 
     /**
@@ -205,17 +211,12 @@ public class RawPacket
             return;
         }
 
-        // re-allocate internal buffer if it is too small
-        if ((this.length + len) > (buffer.length - this.offset)) {
-            byte[] newBuffer = new byte[this.length + len];
-            System.arraycopy(this.buffer, this.offset, newBuffer, 0, this.length);
-            this.offset = 0;
-            this.buffer = newBuffer;
-        }
-        // append data
-        System.arraycopy(data, 0, this.buffer, this.length + this.offset, len);
-        this.length = this.length + len;
-
+        // Ensure the internal buffer is long enough to accommodate data. (The
+        // method grow will re-allocate the internal buffer if it's too short.)
+        grow(len);
+        // Append data.
+        System.arraycopy(data, 0, buffer, length + offset, len);
+        length += len;
     }
 
     /**
@@ -405,8 +406,8 @@ public class RawPacket
 
 
     /**
-     * Returns the CSRC level at the specified index or <tt>0</tt> if there was
-     * no level at that index.
+     * Returns the CSRC level at the specified index or <tt>defaultValue</tt>
+     * if there was no level at that index.
      *
      * @param csrcExtID the ID of the extension that's transporting csrc audio
      * levels in the session that this <tt>RawPacket</tt> belongs to.
@@ -420,25 +421,39 @@ public class RawPacket
     {
         byte level = defaultValue;
 
-        if (getExtensionBit() && getExtensionLength() != 0)
+        try
         {
-            int levelsStart = findExtension(csrcExtID);
-
-            if (levelsStart != -1)
+            if (getExtensionBit() && getExtensionLength() != 0)
             {
-                int levelsCount = getLengthForExtension(levelsStart);
+                int levelsStart = findExtension(csrcExtID);
 
-                if (levelsCount < index)
+                if (levelsStart != -1)
                 {
-                    //apparently the remote side sent more CSRCs than levels.
-                    // ... yeah remote sides do that now and then ...
-                }
-                else
-                {
-                    level = (byte) (0x7F & buffer[levelsStart + index]);
+                    int levelsCount = getLengthForExtension(levelsStart);
+
+                    if (levelsCount < index)
+                    {
+                        //apparently the remote side sent more CSRCs than levels.
+
+                        // ... yeah remote sides do that now and then ...
+                    }
+                    else
+                    {
+                        level = (byte) (0x7F & buffer[levelsStart + index]);
+                    }
                 }
             }
         }
+        catch (ArrayIndexOutOfBoundsException e)
+        {
+            // While ideally we should check the bounds everywhere and not
+            // attempt to access the packet's buffer at invalid indexes, there
+            // are too many places where it could inadvertently happen. It's
+            // safer to return the default value than to risk killing a thread
+            // which may not expect this.
+            level = defaultValue;
+        }
+
         return level;
     }
 
@@ -462,7 +477,10 @@ public class RawPacket
      */
     public static int getCsrcCount(byte[] buffer, int offset, int length)
     {
-        return (buffer[offset] & 0x0f);
+        int cc = buffer[offset] & 0x0f;
+        if (FIXED_HEADER_SIZE + cc * 4 > length)
+            cc = 0;
+        return cc;
     }
 
     /**
@@ -551,8 +569,20 @@ public class RawPacket
         int extLenIndex = offset + FIXED_HEADER_SIZE
             + getCsrcCount(buffer, offset, length) * 4 + 2;
 
-        return
-            ((buffer[extLenIndex] << 8) | (buffer[extLenIndex + 1] & 0xFF)) * 4;
+        int len
+            = ((buffer[extLenIndex] << 8) | (buffer[extLenIndex + 1] & 0xFF))
+                * 4;
+
+        if (len < 0 || len > (length - FIXED_HEADER_SIZE - EXT_HEADER_SIZE -
+            getCsrcCount(buffer, offset, length)*4))
+        {
+            // This is not a valid length. Together with the rest of the
+            // header it exceeds the packet length. So be safe and assume
+            // that there is no extension.
+            len = 0;
+        }
+
+        return len;
     }
 
     /**
@@ -604,10 +634,21 @@ public class RawPacket
         int headerLength
             = FIXED_HEADER_SIZE + 4 * getCsrcCount(buffer, offset, length);
 
+        // Make sure that the header length doesn't exceed the packet length.
+        if (headerLength > length)
+        {
+            headerLength = length;
+        }
+
         if (getExtensionBit(buffer, offset, length))
         {
-            headerLength += EXT_HEADER_SIZE
-                + getExtensionLength(buffer, offset, length);
+            // Make sure that the header length doesn't exceed the packet
+            // length.
+            if (headerLength + EXT_HEADER_SIZE <= length)
+            {
+                headerLength += EXT_HEADER_SIZE
+                    + getExtensionLength(buffer, offset, length);
+            }
         }
 
         return headerLength;
@@ -673,7 +714,17 @@ public class RawPacket
      */
     public int getPaddingSize()
     {
-        if ((buffer[offset] & 0x20) == 0)
+        return getPaddingSize(buffer, offset, length);
+    }
+
+    /**
+     * Get RTP padding size from a RTP packet
+     *
+     * @return RTP padding size from source RTP packet
+     */
+    public static int getPaddingSize(byte[] buf, int off, int len)
+    {
+        if ((buf[off] & 0x20) == 0)
         {
             return 0;
         }
@@ -683,7 +734,7 @@ public class RawPacket
             // padding octets should be ignored, including itself.
 
             // XXX It's an 8-bit unsigned number.
-            return 0xFF & buffer[offset + length - 1];
+            return 0xFF & buf[off + len - 1];
         }
     }
 
@@ -759,7 +810,17 @@ public class RawPacket
      */
     public byte getPayloadType()
     {
-        return (byte) (buffer[offset + 1] & (byte)0x7F);
+        return getPayloadType(buffer, offset, length);
+    }
+
+    /**
+     * Get RTP payload type from a RTP packet
+     *
+     * @return RTP payload type of source RTP packet
+     */
+    public static Byte getPayloadType(byte[] buf, int off, int len)
+    {
+        return (byte) (buf[off + 1] & (byte)0x7F);
     }
 
     /**
@@ -770,6 +831,16 @@ public class RawPacket
     public int getRTCPSSRC()
     {
         return readInt(4);
+    }
+
+    /**
+     * Get RTCP SSRC from a RTCP packet
+     *
+     * @return RTP SSRC from source RTP packet in a {@code long}.
+     */
+    public long getRTCPSSRCAsLong()
+    {
+        return getRTCPSSRC() & 0xffffffffL;
     }
 
     /**
@@ -804,6 +875,39 @@ public class RawPacket
     public static int getSequenceNumber(byte[] buffer, int offset, int length)
     {
         return readUnsignedShortAsInt(buffer, offset + 2, length);
+    }
+
+    /**
+     * Set sequence number for an RTP buffer
+     *
+     * @param buffer
+     * @param offset
+     * @param seq
+     *
+     */
+    public static void setSequenceNumber(byte[] buffer, int offset, int seq)
+    {
+        buffer[offset + 2] = (byte) (seq>>8 & 0xff);
+        buffer[offset + 3] = (byte) (seq & 0xff);
+    }
+
+    /**
+     * Set the RTP timestamp for an RTP buffer.
+     *
+     * @param buf the <tt>byte</tt> array that holds the RTP packet.
+     * @param off the offset in <tt>buffer</tt> at which the actual RTP data
+     * begins.
+     * @param len the number of <tt>byte</tt>s in <tt>buffer</tt> which
+     * constitute the actual RTP data.
+     * @param ts the timestamp to set in the RTP buffer.
+     */
+    public static void setTimestamp(byte[] buf, int off, int len, long ts)
+    {
+        off += 4;
+        buf[off++] = (byte)(ts>>24);
+        buf[off++] = (byte)(ts>>16);
+        buf[off++] = (byte)(ts>>8);
+        buf[off] = (byte)ts;
     }
 
     /**
@@ -870,26 +974,47 @@ public class RawPacket
      */
     public long getTimestamp()
     {
-        return readInt(4) & 0xffffffffl;
+        return getTimestamp(buffer, offset, length);
     }
 
     /**
-     * Grow the internal packet buffer.
+     * Gets the RTP timestamp for an RTP buffer.
      *
-     * This will change the data buffer of this packet but not the
-     * length of the valid data. Use this to grow the internal buffer
-     * to avoid buffer re-allocations when appending data.
+     * @param buf the <tt>byte</tt> array that holds the RTP packet.
+     * @param off the offset in <tt>buffer</tt> at which the actual RTP data
+     * begins.
+     * @param len the number of <tt>byte</tt>s in <tt>buffer</tt> which
+     * constitute the actual RTP data.
+     * @return the timestamp in the RTP buffer.
+     */
+    public static long getTimestamp(byte[] buf, int off, int len)
+    {
+        return readInt(buf, off + 4, len) & 0xffffffffl;
+    }
+
+    /**
+     * Grows the internal buffer of this {@code RawPacket}.
      *
-     * @param howMuch number of bytes to grow
+     * This will change the data buffer of this packet but not the length of the
+     * valid data. Use this to grow the internal buffer to avoid buffer
+     * re-allocations when appending data.
+     *
+     * @param howMuch the number of bytes by which this {@code RawPacket} is to
+     * grow
      */
     public void grow(int howMuch) {
-        if (howMuch == 0) {
-            return;
+        if (howMuch < 0)
+            throw new IllegalArgumentException("howMuch");
+
+        int newLength = length + howMuch;
+
+        if (newLength > buffer.length - offset) {
+            byte[] newBuffer = new byte[newLength];
+
+            System.arraycopy(buffer, offset, newBuffer, 0, length);
+            offset = 0;
+            buffer = newBuffer;
         }
-        byte[] newBuffer = new byte[this.length + howMuch];
-        System.arraycopy(this.buffer, this.offset, newBuffer, 0, this.length);
-        offset = 0;
-        buffer = newBuffer;
     }
 
     /**
@@ -1253,8 +1378,7 @@ public class RawPacket
       */
     public void setSequenceNumber(int seq)
     {
-        writeByte(2, (byte) (seq>>8 & 0xff));
-        writeByte(3, (byte) (seq & 0xff));
+        RawPacket.setSequenceNumber(buffer, offset, seq);
     }
 
     /**
@@ -1273,7 +1397,7 @@ public class RawPacket
      */
     public void setTimestamp(long timestamp)
     {
-        writeInt(4, (int)timestamp);
+        setTimestamp(buffer, offset, length, timestamp);
     }
 
     /**
@@ -1321,9 +1445,9 @@ public class RawPacket
      *
      * @return the OSN value of an RTX packet.
      */
-    public short getOriginalSequenceNumber()
+    public int getOriginalSequenceNumber()
     {
-        return readShort(getHeaderLength());
+        return readShort(getHeaderLength()) & 0xFFFF;
     }
 
     /**
@@ -1331,8 +1455,34 @@ public class RawPacket
      *
      * @param sequenceNumber the new OSN value of this RTX packet.
      */
-    public void setOriginalSequenceNumber(short sequenceNumber)
+    public void setOriginalSequenceNumber(int sequenceNumber)
     {
-        writeShort(getHeaderLength(), sequenceNumber);
+        writeShort(getHeaderLength(), (short) sequenceNumber);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public String toString()
+    {
+        // Note: this will not print meaningful values unless the packet is an
+        // RTP packet.
+        StringBuilder sb
+            = new StringBuilder("RawPacket[off=").append(offset)
+            .append(", len=").append(length)
+            .append(", PT=").append(getPayloadType())
+            .append(", SSRC=").append(getSSRCAsLong())
+            .append(", seq=").append(getSequenceNumber())
+            .append(", M=").append(isPacketMarked())
+            .append(", X=").append(getExtensionBit())
+            .append(", TS=").append(getTimestamp())
+            .append(", hdrLen=").append(getHeaderLength())
+            .append(", payloadLen=").append(getPayloadLength())
+            .append(", paddingLen=").append(getPaddingSize())
+            .append(", extLen=").append(getExtensionLength())
+            .append(']');
+
+        return sb.toString();
     }
 }

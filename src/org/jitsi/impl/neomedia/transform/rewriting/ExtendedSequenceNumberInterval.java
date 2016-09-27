@@ -17,14 +17,15 @@ package org.jitsi.impl.neomedia.transform.rewriting;
 
 import java.util.*;
 
-import org.jitsi.util.*;
-import org.jitsi.util.function.*;
 import org.jitsi.impl.neomedia.*;
 import org.jitsi.impl.neomedia.codec.*;
+import org.jitsi.util.*;
+import org.jitsi.util.function.*;
 
 /**
- * Does the dirty job of rewriting SSRCs and sequence numbers of a
- * given extended sequence number interval of a given source SSRC.
+ * Does the dirty job of rewriting SSRCs and sequence numbers of a given
+ * extended sequence number interval of a given source SSRC. This class is not
+ * thread safe.
  *
  * @author George Politis
  * @author Lyubomir Marinov
@@ -37,6 +38,27 @@ class ExtendedSequenceNumberInterval
      */
     private static final Logger logger
         = Logger.getLogger(ExtendedSequenceNumberInterval.class);
+
+    /**
+     * The value of {@link Logger#isDebugEnabled()} from the time of the
+     * initialization of the class {@code ExtendedSequenceNumberInterval} cached
+     * for the purposes of performance.
+     */
+    private static final boolean DEBUG;
+
+    /**
+     * The value of {@link Logger#isWarnEnabled()} from the time of the
+     * initialization of the class {@code ExtendedSequenceNumberInterval} cached
+     * for the purposes of performance.
+     */
+    private static final boolean WARN;
+
+    /**
+     * The value of {@link Logger#isTraceEnabled()} from the time of the
+     * initialization of the class {@code ExtendedSequenceNumberInterval} cached
+     * for the purposes of performance.
+     */
+    private static final boolean TRACE;
 
     /**
      * The extended minimum sequence number of this interval.
@@ -55,14 +77,23 @@ class ExtendedSequenceNumberInterval
     public final SsrcRewriter ssrcRewriter;
 
     /**
+     * Static init.
+     */
+    static
+    {
+        DEBUG = logger.isDebugEnabled();
+        WARN = logger.isWarnEnabled();
+        TRACE = logger.isTraceEnabled();
+    }
+    /**
      * The predicate used to match FEC <tt>REDBlock</tt>s.
      */
     private final Predicate<REDBlock> fecPredicate = new Predicate<REDBlock>()
     {
         public boolean test(REDBlock redBlock)
         {
-            Map<Integer, Byte> ssrc2fec = getSsrcRewritingEngine().ssrc2fec;
-            int sourceSSRC = ssrcRewriter.getSourceSSRC();
+            Map<Long, Byte> ssrc2fec = getSsrcRewritingEngine().ssrc2fec;
+            long sourceSSRC = ssrcRewriter.getSourceSSRC();
             return redBlock != null
                 && ssrc2fec.get(sourceSSRC) == redBlock.getPayloadType();
         }
@@ -79,52 +110,21 @@ class ExtendedSequenceNumberInterval
     long lastSeen;
 
     /**
-     * Holds the max RTP timestamp that we've sent (to the endpoint)
-     * in this interval.
-     */
-    long maxTimestamp;
-
-    private final long timestampOrig;
-
-    private final long timestampTarget;
-
-    /**
      * Ctor.
      *
      * @param ssrcRewriter
      * @param extendedBaseOrig
      * @param extendedBaseTarget
-     * @param timestampOrig
-     * @param timestampTarget
      */
     public ExtendedSequenceNumberInterval(
             SsrcRewriter ssrcRewriter,
-            int extendedBaseOrig, int extendedBaseTarget,
-            long timestampOrig, long timestampTarget)
+            int extendedBaseOrig, int extendedBaseTarget)
     {
         this.ssrcRewriter = ssrcRewriter;
         this.extendedBaseTarget = extendedBaseTarget;
 
         this.extendedMinOrig = extendedBaseOrig;
         this.extendedMaxOrig = extendedBaseOrig;
-
-        this.timestampOrig = timestampOrig;
-        this.timestampTarget = timestampTarget;
-    }
-
-    public long getLastSeen()
-    {
-        return lastSeen;
-    }
-
-    public int getExtendedMin()
-    {
-        return extendedMinOrig;
-    }
-
-    public int getExtendedMax()
-    {
-        return extendedMaxOrig;
     }
 
     /**
@@ -164,22 +164,39 @@ class ExtendedSequenceNumberInterval
     {
         // SSRC
         SsrcGroupRewriter ssrcGroupRewriter = getSsrcGroupRewriter();
-        int ssrcTarget = ssrcGroupRewriter.getSSRCTarget();
+        long ssrcTarget = ssrcGroupRewriter.getSSRCTarget();
 
-        pkt.setSSRC(ssrcTarget);
+        pkt.setSSRC((int) ssrcTarget);
 
         // Sequence number
-        short seqnum = (short) pkt.getSequenceNumber();
+        int seqnum = pkt.getSequenceNumber();
         int extendedSeqnum = ssrcRewriter.extendOriginalSequenceNumber(seqnum);
+        if (extendedSeqnum < extendedMinOrig)
+        {
+            // This is expected to happen if we just switched simulcast streams,
+            // and we received retransmissions for packets before the switch.
+            // Drop these, because they are not supposed to be sent to the
+            // received (their sequence number has been used by packets from
+            // the previous stream).
+            if (DEBUG)
+            {
+                logger.debug(
+                    "Dropping a packet outside this interval: " + pkt
+                        + ", streamHashCode=" + ssrcGroupRewriter
+                        .ssrcRewritingEngine.getMediaStream().hashCode());
+            }
+            return null;
+        }
+
         int rewriteSeqnum = rewriteExtendedSequenceNumber(extendedSeqnum);
 
         pkt.setSequenceNumber(rewriteSeqnum);
 
         SsrcRewritingEngine ssrcRewritingEngine
             = ssrcGroupRewriter.ssrcRewritingEngine;
-        Map<Integer, Integer> rtx2primary = ssrcRewritingEngine.rtx2primary;
-        int sourceSSRC = ssrcRewriter.getSourceSSRC();
-        Integer primarySSRC = rtx2primary.get(sourceSSRC);
+        Map<Long, Long> rtx2primary = ssrcRewritingEngine.rtx2primary;
+        long sourceSSRC = ssrcRewriter.getSourceSSRC();
+        Long primarySSRC = rtx2primary.get(sourceSSRC);
 
         if (primarySSRC == null)
             primarySSRC = sourceSSRC;
@@ -188,7 +205,8 @@ class ExtendedSequenceNumberInterval
         boolean rtx = rtx2primary.containsKey(sourceSSRC);
 
         // RED
-        if (ssrcRewritingEngine.ssrc2red.get(sourceSSRC) == pt)
+        Byte red = ssrcRewritingEngine.ssrc2red.get(sourceSSRC);
+        if (red != null && red == pt)
         {
             byte[] buf = pkt.getBuffer();
             int osnLen = rtx ? 2 : 0;
@@ -199,7 +217,8 @@ class ExtendedSequenceNumberInterval
         }
 
         // FEC
-        if (ssrcRewritingEngine.ssrc2fec.get(sourceSSRC) == pt)
+        Byte fec = ssrcRewritingEngine.ssrc2fec.get(sourceSSRC);
+        if (fec != null && fec == pt)
         {
             byte[] buf = pkt.getBuffer();
             int osnLen = rtx ? 2 : 0;
@@ -218,39 +237,7 @@ class ExtendedSequenceNumberInterval
         if (rtx && !rewriteRTX(pkt))
             return null;
 
-        // timestamp
-        //
-        // XXX Since we may be rewriting the RTP timestamp and, consequently, we
-        // may be remembering timestamp-related state, it sounds better to do
-        // these after FEC and RTX have not discarded pkt.
-        rewriteTimestamp(pkt);
-
         return pkt;
-    }
-
-    /**
-     * Rewrites the RTP timestamp of a specific RTP packet.
-     *
-     * @param pkt the {@code RawPacket} which represents the RTP packet to
-     * rewrite the RTP timestamp of
-     */
-    private void rewriteTimestamp(RawPacket pkt)
-    {
-        long timestamp = pkt.getTimestamp();
-
-        // Rewrite timestampOrig into timestampTarget.
-        if (timestamp == timestampOrig)
-        {
-            timestamp = timestampTarget;
-            pkt.setTimestamp(timestamp);
-        }
-
-        // Update the maximum RTP timestamp that we've sent to the endpoint (in
-        // this interval).
-        if (maxTimestamp < timestamp)
-        {
-            maxTimestamp = timestamp;
-        }
     }
 
     /**
@@ -262,9 +249,9 @@ class ExtendedSequenceNumberInterval
     {
         // This is an RTX packet. Replace RTX OSN field or drop.
         SsrcRewritingEngine ssrcRewritingEngine = getSsrcRewritingEngine();
-        int sourceSSRC = ssrcRewriter.getSourceSSRC();
-        int ssrcOrig = ssrcRewritingEngine.rtx2primary.get(sourceSSRC);
-        short snOrig = pkt.getOriginalSequenceNumber();
+        long sourceSSRC = ssrcRewriter.getSourceSSRC();
+        long ssrcOrig = ssrcRewritingEngine.rtx2primary.get(sourceSSRC);
+        int snOrig = pkt.getOriginalSequenceNumber();
 
         SsrcGroupRewriter rewriterPrimary
             = ssrcRewritingEngine.origin2rewriter.get(ssrcOrig);
@@ -278,7 +265,7 @@ class ExtendedSequenceNumberInterval
         }
         else
         {
-            pkt.setOriginalSequenceNumber((short) sequenceNumber);
+            pkt.setOriginalSequenceNumber(sequenceNumber);
             return true;
         }
     }
@@ -304,17 +291,21 @@ class ExtendedSequenceNumberInterval
      * @return {@code true} if the RED was successfully rewritten;
      * {@code false}, otherwise
      */
-    private boolean rewriteRED(int primarySSRC, byte[] buf, int off, int len)
+    private boolean rewriteRED(long primarySSRC, byte[] buf, int off, int len)
     {
         if (buf == null || buf.length == 0)
         {
-            logger.warn("The buffer is empty.");
+            logger.warn("The buffer is empty."
+                + ", streamHashCode=" + ssrcRewriter.ssrcGroupRewriter
+                .ssrcRewritingEngine.getMediaStream().hashCode());
             return false;
         }
 
         if (buf.length < off + len)
         {
-            logger.warn("The buffer is invalid.");
+            logger.warn("The buffer is invalid."
+                + ", streamHashCode=" + ssrcRewriter.ssrcGroupRewriter
+                .ssrcRewritingEngine.getMediaStream().hashCode());
             return false;
         }
 
@@ -343,16 +334,20 @@ class ExtendedSequenceNumberInterval
      * @return {@code true} if the FEC was successfully rewritten;
      * {@code false}, otherwise
      */
-    private boolean rewriteFEC(int sourceSSRC, byte[] buf, int off, int len)
+    private boolean rewriteFEC(long sourceSSRC, byte[] buf, int off, int len)
     {
         if (buf == null || buf.length == 0)
         {
-            logger.warn("The buffer is empty.");
+            logger.warn("The buffer is empty."
+                + ", streamHashCode=" + ssrcRewriter.ssrcGroupRewriter
+                .ssrcRewritingEngine.getMediaStream().hashCode());
             return false;
         }
-        if (buf.length < off + len)
+        if ((buf.length < off + len) || (len < 4))
         {
-            logger.warn("The buffer is invalid.");
+            logger.warn("The buffer is invalid."
+                + ", streamHashCode=" + ssrcRewriter.ssrcGroupRewriter
+                .ssrcRewritingEngine.getMediaStream().hashCode());
             return false;
         }
 
@@ -365,7 +360,7 @@ class ExtendedSequenceNumberInterval
         // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
         // |        length recovery        |
         // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-        short snBase = (short) ((buf[off + 2] & 0xff) << 8 | (buf[off + 3] & 0xff));
+        int snBase = (buf[off + 2] & 0xff) << 8 | (buf[off + 3] & 0xff);
 
         SsrcGroupRewriter rewriter
             = getSsrcRewritingEngine().origin2rewriter.get(sourceSSRC);
@@ -376,8 +371,18 @@ class ExtendedSequenceNumberInterval
         {
             logger.info(
                     "We could not find a sequence number interval for a FEC"
-                        + " packet.");
+                        + " packet." +  ", streamHashCode=" + ssrcRewriter
+                        .ssrcGroupRewriter.ssrcRewritingEngine
+                        .getMediaStream().hashCode());
             return false;
+        }
+
+        if (TRACE)
+        {
+            logger.trace("Rewriting FEC packet SN base "
+                + snBase + " to " + snRewritenBase +  ", streamHashCode="
+                + ssrcRewriter.ssrcGroupRewriter.ssrcRewritingEngine
+                .getMediaStream().hashCode());
         }
 
         buf[off + 2] = (byte) (snRewritenBase & 0xff00 >> 8);

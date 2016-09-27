@@ -23,10 +23,14 @@ import javax.media.rtp.*;
 import net.sf.fmj.media.rtp.*;
 import net.sf.fmj.media.rtp.RTPHeader;
 
+import org.ice4j.util.*;
 import org.jitsi.impl.neomedia.*;
+import org.jitsi.impl.neomedia.rtcp.*;
+import org.jitsi.impl.neomedia.rtp.*;
 import org.jitsi.service.libjitsi.*;
 import org.jitsi.service.neomedia.*;
 import org.jitsi.util.*;
+import org.jitsi.util.Logger; // Disambiguation.
 
 /**
  * Implements <tt>OutputDataStream</tt> for an <tt>RTPTranslatorImpl</tt>. The
@@ -34,6 +38,9 @@ import org.jitsi.util.*;
  * endpoint <tt>OutputDataStream</tt>s.
  *
  * @author Lyubomir Marinov
+ * @author Maryam Daneshi
+ * @author George Politis
+ * @author Boris Grozev
  */
 class OutputDataStreamImpl
     implements OutputDataStream,
@@ -98,6 +105,8 @@ class OutputDataStreamImpl
 
     private int writeQLength;
 
+    private final QueueStatistics writeQStats;
+
     /**
      * The number of packets dropped because a packet was inserted while
      * {@link #writeQ} was full.
@@ -116,6 +125,17 @@ class OutputDataStreamImpl
                     LibJitsi.getConfigurationService(),
                     REMOVE_RTP_HEADER_EXTENSIONS_PNAME,
                     false);
+
+        if (logger.isTraceEnabled())
+        {
+            writeQStats
+                = new QueueStatistics(
+                    getClass().getSimpleName() + "-" + hashCode());
+        }
+        else
+        {
+            writeQStats = null;
+        }
     }
 
     /**
@@ -226,24 +246,38 @@ class OutputDataStreamImpl
                             format,
                             exclusion);
             }
-            if (!write)
-                continue;
 
-            // Allow the RTPTranslatorImpl a final chance to filter out the
-            // packet on a source-destination basis.
-            write
-                = translator.willWrite(
+            if (write)
+            {
+                // Allow the RTPTranslatorImpl a final chance to filter out the
+                // packet on a source-destination basis.
+                write
+                    = translator.willWrite(
                         /* source */ exclusion,
-                        buf, off, len,
+                    buf, off, len,
                         /* destination */ streamRTPManager,
-                        _data);
-            if (!write)
-                continue;
+                    _data);
+            }
 
-            int w = s.stream.write(buf, off, len);
+            // Hide the gaps in the sequence numbers and in the timestamps (
+            // because of dropping packets here).
+            boolean altered = rewritePacket(
+                streamRTPManager, write, true /* rewrite */, buf, off, len);
 
-            if (written < w)
-                written = w;
+            if (write)
+            {
+                int w = s.stream.write(buf, off, len);
+
+                if (written < w)
+                    written = w;
+            }
+
+            if (altered)
+            {
+                // Restore the packet for processing by the other streams.
+                rewritePacket(streamRTPManager, write, false /* restore */,
+                    buf, off, len);
+            }
         }
         return written;
     }
@@ -390,6 +424,10 @@ class OutputDataStreamImpl
                     if (writeQHead >= writeQ.length)
                         writeQHead = 0;
                     writeQLength--;
+                    if (writeQStats != null)
+                    {
+                        writeQStats.remove(System.currentTimeMillis());
+                    }
                 }
 
                 try
@@ -436,7 +474,7 @@ class OutputDataStreamImpl
      * destination of the write
      * @param buffer the data to be written into <tt>destination</tt>
      * @param offset the offset in <tt>buffer</tt> at which the data to be
-     * written into <tt>destination</tt> starts 
+     * written into <tt>destination</tt> starts
      * @param length the number of <tt>byte</tt>s in <tt>buffer</tt>
      * beginning at <tt>offset</tt> which constitute the data to the written
      * into <tt>destination</tt>
@@ -631,6 +669,10 @@ class OutputDataStreamImpl
             if (writeQHead >= writeQ.length)
                 writeQHead = 0;
             writeQLength--;
+            if (writeQStats != null)
+            {
+                writeQStats.remove(System.currentTimeMillis());
+            }
 
             numDroppedPackets++;
             if (RTPConnectorOutputStream.logDroppedPacket(numDroppedPackets))
@@ -657,6 +699,10 @@ class OutputDataStreamImpl
         write.length = len;
 
         writeQLength++;
+        if (writeQStats != null)
+        {
+            writeQStats.add(System.currentTimeMillis());
+        }
 
         if (writeThread == null)
             createWriteThread();
@@ -694,4 +740,194 @@ class OutputDataStreamImpl
         }
         return false;
     }
+
+
+    /**
+     * Rewrites or restores an RTP or an RTCP packet.
+     *
+     * @param streamRTPManager the target {@link StreamRTPManagerDesc}.
+     * @param write true if the packet is going to be written, false otherwise.
+     * @param rewrite true to rewrite the packet, false to restore it.
+     * @param buf the byte buffer that contains the RTP/RTCP packet.
+     * @param off the offset in the byte buffer where the RTP/RTCP packet
+     * starts.
+     * @param len the number of bytes in buffer which constitute the actual
+     * data.
+     * @return true if the packet was modified, false otherwise
+     */
+    private boolean rewritePacket(StreamRTPManagerDesc streamRTPManager,
+                                  boolean write, boolean rewrite,
+                                  byte[] buf, int off, int len)
+    {
+        if (_data)
+        {
+            Long ssrc = RawPacket.getSSRCAsLong(buf, off, len);
+
+            ResumableStreamRewriter rewriter = streamRTPManager
+                .streamRTPManager.getResumableStreamRewriter(ssrc);
+
+            if (logger.isDebugEnabled())
+            {
+                logger.debug("pre-" + (rewrite ? "rewrite" : "restore")
+                    + " RTP ssrc=" + ssrc
+                    + ", seqnum=" + RawPacket.getSequenceNumber(buf, off, len)
+                    + ", ts=" + RawPacket.getTimestamp(buf, off, len)
+                    + ", highestTimestampSent="
+                    + rewriter.getHighestTimestampSent()
+                    + ", timestampDelta="
+                    + rewriter.getTimestampDelta()
+                    + ", highestSeqnumSent="
+                    + rewriter.getHighestSequenceNumberSent()
+                    + ", seqnumDelta="
+                    + rewriter.getSeqnumDelta()
+                    + ", streamHashCode=" + streamRTPManager.streamRTPManager.getMediaStream().hashCode());
+            }
+
+            boolean mod = rewrite
+                ? rewriter.rewriteRTP(write, buf, off, len)
+                : rewriter.restoreRTP(buf, off, len);
+
+            if (logger.isDebugEnabled())
+            {
+                logger.debug("post-" + (rewrite ? "rewrite" : "restore")
+                    + " RTP ssrc=" + ssrc
+                    + ", seqnum=" + RawPacket.getSequenceNumber(buf, off, len)
+                    + ", ts=" + RawPacket.getTimestamp(buf, off, len)
+                    + ", highestTimestampSent="
+                    + rewriter.getHighestTimestampSent()
+                    + ", timestampDelta="
+                    + rewriter.getTimestampDelta()
+                    + ", highestSeqnumSent="
+                    + rewriter.getHighestSequenceNumberSent()
+                    + ", seqnumDelta="
+                    + rewriter.getSeqnumDelta()
+                    + ", streamHashCode=" + streamRTPManager.streamRTPManager.getMediaStream().hashCode());
+            }
+
+            return mod;
+        }
+        else
+        {
+            int offset = off, length = len;
+
+            boolean modified = false;
+
+            // The correct thing to do here is a loop because the RTCP packet
+            // can be compound. However, in practice we haven't seen multiple
+            // SRs being bundled in the same compound packet, and we're only
+            // interested in SRs.
+
+            // Check RTCP packet validity. This makes sure that pktLen > 0
+            // so this loop will eventually terminate.
+            if (!RTCPHeaderUtils.isValid(buf, offset, length))
+            {
+                return modified;
+            }
+
+            int pktLen = RTCPHeaderUtils.getLength(buf, offset, length);
+
+            int pt = RTCPHeaderUtils.getPacketType(buf, offset, pktLen);
+            if (pt == RTCPPacket.SR)
+            {
+                long ssrc
+                    = RTCPHeaderUtils.getSenderSSRC(buf, offset, pktLen);
+
+                // If an SR is received, then we have media.
+                ResumableStreamRewriter rewriter = streamRTPManager
+                    .streamRTPManager.getResumableStreamRewriter(ssrc);
+
+                if (rewriter != null)
+                {
+                    if (logger.isDebugEnabled())
+                    {
+                        long rtptimestamp
+                            = RTCPSenderInfoUtils.getTimestamp(
+                            buf, offset + RTCPHeader.SIZE,
+                            pktLen - RTCPHeader.SIZE);
+                        long ntptimestampmsw
+                            = RTCPSenderInfoUtils.getNtpTimestampMSW(
+                            buf, offset + RTCPHeader.SIZE,
+                            pktLen - RTCPHeader.SIZE);
+                        long ntptimestamplsw
+                            = RTCPSenderInfoUtils.getNtpTimestampLSW(
+                            buf, offset + RTCPHeader.SIZE,
+                            pktLen - RTCPHeader.SIZE);
+
+                        long systemTimeMs = TimeUtils.getTime(
+                            TimeUtils.constuctNtp(
+                                ntptimestampmsw, ntptimestamplsw));
+
+                        logger.debug("pre-" + (rewrite ? "rewrite" : "restore")
+                            + " RTCP ssrc=" + ssrc
+                            + ", ts=" + rtptimestamp
+                            + ", packed_realtime=" + new Date(systemTimeMs)
+                            + ", packed_realtime_ms=" + systemTimeMs
+                            + ", highestTimestampSent="
+                            + rewriter.getHighestTimestampSent()
+                            + ", timestampDelta="
+                            + rewriter.getTimestampDelta()
+                            + ", highestSeqnumSent="
+                            + rewriter.getHighestSequenceNumberSent()
+                            + ", seqnumDelta="
+                            + rewriter.getSeqnumDelta()
+                            + ", streamHashCode=" + streamRTPManager.streamRTPManager.getMediaStream().hashCode());
+                    }
+                    boolean mod = rewriter.processRTCP(
+                        rewrite, buf, offset, pktLen);
+
+                    if (mod)
+                    {
+                        modified = mod;
+
+                        if (logger.isDebugEnabled())
+                        {
+                            long rtptimestamp
+                                = RTCPSenderInfoUtils.getTimestamp(
+                                buf, offset + RTCPHeader.SIZE,
+                                pktLen - RTCPHeader.SIZE);
+                            long ntptimestampmsw
+                                = RTCPSenderInfoUtils.getNtpTimestampMSW(
+                                buf, offset + RTCPHeader.SIZE,
+                                pktLen - RTCPHeader.SIZE);
+                            long ntptimestamplsw
+                                = RTCPSenderInfoUtils.getNtpTimestampLSW(
+                                buf, offset + RTCPHeader.SIZE,
+                                pktLen - RTCPHeader.SIZE);
+
+                            long systemTimeMs = TimeUtils.getTime(
+                                TimeUtils.constuctNtp(
+                                    ntptimestampmsw, ntptimestamplsw));
+
+                            logger.debug("post-" + (rewrite ? "rewrite" : "restore")
+                                + " RTCP ssrc=" + ssrc
+                                + ", ts=" + rtptimestamp
+                                + ", packed_realtime=" + new Date(systemTimeMs)
+                                + ", packed_realtime_ms=" + systemTimeMs
+                                + ", highestTimestampSent="
+                                + rewriter.getHighestTimestampSent()
+                                + ", timestampDelta="
+                                + rewriter.getTimestampDelta()
+                                + ", highestSeqnumSent="
+                                + rewriter.getHighestSequenceNumberSent()
+                                + ", seqnumDelta="
+                                + rewriter.getSeqnumDelta()
+                                + ", streamHashCode=" + streamRTPManager.streamRTPManager.getMediaStream().hashCode());
+                        }
+                    }
+                }
+
+                if (rewrite)
+                {
+                    // We want to update the remote clock only after we
+                    // rewrite the RTCP packet..
+                    streamRTPManager.streamRTPManager
+                        .getRemoteClockEstimator().update(
+                        buf, offset, pktLen);
+                }
+            }
+
+            return modified;
+        }
+    }
+
 }

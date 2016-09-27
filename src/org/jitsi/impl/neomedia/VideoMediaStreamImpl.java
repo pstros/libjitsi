@@ -43,6 +43,7 @@ import org.jitsi.service.neomedia.device.*;
 import org.jitsi.service.neomedia.format.*;
 import org.jitsi.service.neomedia.rtp.*;
 import org.jitsi.util.*;
+import org.jitsi.util.concurrent.*;
 import org.jitsi.util.event.*;
 
 /**
@@ -70,7 +71,8 @@ public class VideoMediaStreamImpl
      */
     private static final RecurringProcessibleExecutor
         recurringProcessibleExecutor
-            = new RecurringProcessibleExecutor();
+            = new RecurringProcessibleExecutor(
+                    VideoMediaStreamImpl.class.getSimpleName());
 
     /**
      * The indicator which determines whether RTCP feedback Picture Loss
@@ -94,9 +96,9 @@ public class VideoMediaStreamImpl
         Pattern pSendSingle = Pattern.compile("send \\[x=[0-9]+,y=[0-9]+\\]");
         Pattern pRecvSingle = Pattern.compile("recv \\[x=[0-9]+,y=[0-9]+\\]");
         Pattern pSendRange = Pattern.compile(
-                "send \\[x=\\[[0-9]+-[0-9]+\\],y=\\[[0-9]+-[0-9]+\\]\\]");
+                "send \\[x=\\[[0-9]+(-|:)[0-9]+\\],y=\\[[0-9]+(-|:)[0-9]+\\]\\]");
         Pattern pRecvRange = Pattern.compile(
-                "recv \\[x=\\[[0-9]+-[0-9]+\\],y=\\[[0-9]+-[0-9]+\\]\\]");
+                "recv \\[x=\\[[0-9]+(-|:)[0-9]+\\],y=\\[[0-9]+(-|:)[0-9]+\\]\\]");
         Pattern pNumeric = Pattern.compile("[0-9]+");
         Matcher mSingle = null;
         Matcher mRange = null;
@@ -105,7 +107,7 @@ public class VideoMediaStreamImpl
         /* resolution (width and height) can be on four forms
          *
          * - single value [x=1920,y=1200]
-         * - range of values [x=[800-1024],y=[600-768]]
+         * - range of values [x=[800:1024],y=[600:768]]
          * - fixed range of values [x=[800,1024],y=[600,768]]
          * - range of values with step [x=[800:32:1024],y=[600:32:768]]
          *
@@ -132,7 +134,7 @@ public class VideoMediaStreamImpl
         }
         else if(mRange.find()) /* try with range */
         {
-            /* have two value for width and two for height (min-max) */
+            /* have two value for width and two for height (min:max) */
             int val[]  = new int[4];
             int i = 0;
             token = imgattr.substring(mRange.start(), mRange.end());
@@ -167,7 +169,7 @@ public class VideoMediaStreamImpl
         }
         else if(mRange.find()) /* try with range */
         {
-            /* have two value for width and two for height (min-max) */
+            /* have two value for width and two for height (min:max) */
             int val[]  = new int[4];
             int i = 0;
             token = imgattr.substring(mRange.start(), mRange.end());
@@ -1308,15 +1310,6 @@ public class VideoMediaStreamImpl
      * {@inheritDoc}
      */
     @Override
-    protected AbsSendTimeEngine createAbsSendTimeEngine()
-    {
-        return new AbsSendTimeEngine();
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
     protected CachingTransformer createCachingTransformer()
     {
         return new CachingTransformer();
@@ -1326,39 +1319,12 @@ public class VideoMediaStreamImpl
      * {@inheritDoc}
      */
     @Override
-    protected RetransmissionRequester createRetransmissionRequester()
+    protected RetransmissionRequesterImpl createRetransmissionRequester()
     {
         ConfigurationService cfg = LibJitsi.getConfigurationService();
         if (cfg != null && cfg.getBoolean(REQUEST_RETRANSMISSIONS_PNAME, false))
         {
-            if (rtpTranslator != null)
-            {
-                // The local SSRC from the RTPTranslator and the one from
-                // MediaStreamImpl differ. In all current use-cases
-                // (jitsi-videobridge) we need the one from the RTPTranslator.
-                // TAG(cat4-local-ssrc-hurricane)
-                long senderSSRC
-                    = ((RTPTranslatorImpl) rtpTranslator).getLocalSSRC(null);
-                if (senderSSRC == -1)
-                {
-                    logger.warn("Will not request retransmissions: cannot find "
-                                        + "local SSRC.");
-                }
-                else
-                {
-                    if (logger.isDebugEnabled())
-                    {
-                        logger.debug("Creating a RetransmissionRequester for "
-                            + "VideoMediaStream " + this);
-                    }
-                    return new RetransmissionRequester(this, senderSSRC);
-                }
-            }
-            else
-            {
-                logger.warn("Will not request retransmissions: RTPTranslator "
-                                    + "is not in use.");
-            }
+            return new RetransmissionRequesterImpl(this);
         }
         return null;
     }

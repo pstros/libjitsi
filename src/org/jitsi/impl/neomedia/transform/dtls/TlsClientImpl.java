@@ -94,24 +94,28 @@ public class TlsClientImpl
      * {@inheritDoc}
      *
      * Overrides the super implementation to explicitly specify cipher suites
-     * which we know to be supported by Bouncy Castle. At the time of this
-     * writing, we know that Bouncy Castle implements Client Key Exchange only
-     * with <tt>TLS_ECDHE_WITH_XXX</tt> and <tt>TLS_RSA_WITH_XXX</tt>.
+     * which we know to be supported by Bouncy Castle and provide Perfect
+     * Forward Secrecy.
      */
     @Override
     public int[] getCipherSuites()
     {
-        return
-            new int[]
-                    {
+        return new int[]
+        {
 /* core/src/main/java/org/bouncycastle/crypto/tls/DefaultTlsClient.java */
-                        CipherSuite.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-                        CipherSuite.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
-                        CipherSuite.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
-                        CipherSuite.TLS_RSA_WITH_AES_128_GCM_SHA256,
-                        CipherSuite.TLS_RSA_WITH_AES_128_CBC_SHA256,
-                        CipherSuite.TLS_RSA_WITH_AES_128_CBC_SHA
-                    };
+            CipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+            CipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
+            CipherSuite.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA,
+            CipherSuite.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+            CipherSuite.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
+            CipherSuite.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA,
+            CipherSuite.TLS_DHE_DSS_WITH_AES_128_GCM_SHA256,
+            CipherSuite.TLS_DHE_DSS_WITH_AES_128_CBC_SHA256,
+            CipherSuite.TLS_DHE_DSS_WITH_AES_128_CBC_SHA,
+            CipherSuite.TLS_DHE_RSA_WITH_AES_128_GCM_SHA256,
+            CipherSuite.TLS_DHE_RSA_WITH_AES_128_CBC_SHA256,
+            CipherSuite.TLS_DHE_RSA_WITH_AES_128_CBC_SHA,
+        };
     }
 
     /**
@@ -127,8 +131,8 @@ public class TlsClientImpl
     {
         Hashtable clientExtensions = super.getClientExtensions();
 
-        if (!getDtlsControl().isSrtpDisabled() &&
-            TlsSRTPUtils.getUseSRTPExtension(clientExtensions) == null)
+        if (!isSrtpDisabled()
+                && TlsSRTPUtils.getUseSRTPExtension(clientExtensions) == null)
         {
             if (clientExtensions == null)
                 clientExtensions = new Hashtable();
@@ -188,6 +192,11 @@ public class TlsClientImpl
         return ProtocolVersion.DTLSv10;
     }
 
+    private Properties getProperties()
+    {
+        return packetTransformer.getProperties();
+    }
+
     /**
      * {@inheritDoc}
      *
@@ -204,6 +213,18 @@ public class TlsClientImpl
     }
 
     /**
+     * Determines whether this {@code TlsClientImpl} is to operate in pure DTLS
+     * mode without SRTP extensions or in DTLS/SRTP mode.
+     *
+     * @return {@code true} for pure DTLS without SRTP extensions or
+     * {@code false} for DTLS/SRTP
+     */
+    private boolean isSrtpDisabled()
+    {
+        return getProperties().isSrtpDisabled();
+    }
+
+    /**
      * {@inheritDoc}
      *
      * Forwards to {@link #packetTransformer}.
@@ -213,7 +234,7 @@ public class TlsClientImpl
             short alertLevel,
             short alertDescription,
             String message,
-            Exception cause)
+            Throwable cause)
     {
         packetTransformer.notifyAlertRaised(
                 this,
@@ -231,7 +252,7 @@ public class TlsClientImpl
     public void processServerExtensions(Hashtable serverExtensions)
         throws IOException
     {
-        if (getDtlsControl().isSrtpDisabled())
+        if (isSrtpDisabled())
         {
             super.processServerExtensions(serverExtensions);
             return;
@@ -320,17 +341,16 @@ public class TlsClientImpl
         {
             if (clientCredentials == null)
             {
-                DtlsControlImpl dtlsControl = getDtlsControl();
+                CertificateInfo certificateInfo
+                    = getDtlsControl().getCertificateInfo();
 
-                /*
-                 * FIXME The signature and hash algorithms should be retrieved
-                 * from the certificate.
-                 */
+                // FIXME The signature and hash algorithms should be retrieved
+                // from the certificate.
                 clientCredentials
                     = new DefaultTlsSignerCredentials(
                             context,
-                            dtlsControl.getCertificate(),
-                            dtlsControl.getKeyPair().getPrivate(),
+                            certificateInfo.getCertificate(),
+                            certificateInfo.getKeyPair().getPrivate(),
                             new SignatureAndHashAlgorithm(
                                     HashAlgorithm.sha1,
                                     SignatureAlgorithm.rsa));

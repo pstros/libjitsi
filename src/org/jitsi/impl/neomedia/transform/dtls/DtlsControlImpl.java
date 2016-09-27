@@ -15,8 +15,6 @@
  */
 package org.jitsi.impl.neomedia.transform.dtls;
 
-import gnu.java.zrtp.utils.*;
-
 import java.io.*;
 import java.math.*;
 import java.security.*;
@@ -35,7 +33,6 @@ import org.bouncycastle.crypto.util.*;
 import org.bouncycastle.operator.*;
 import org.bouncycastle.operator.bc.*;
 import org.jitsi.impl.neomedia.*;
-import org.jitsi.service.configuration.*;
 import org.jitsi.service.libjitsi.*;
 import org.jitsi.service.neomedia.*;
 import org.jitsi.service.version.*;
@@ -57,7 +54,7 @@ public class DtlsControlImpl
      * lower case.
      */
     private static final Map<String,String[]> HASH_FUNCTION_UPGRADES
-        = new HashMap<String,String[]>();
+        = new HashMap<>();
 
     /**
      * The table which maps half-<tt>byte</tt>s to their hex characters.
@@ -81,12 +78,80 @@ public class DtlsControlImpl
     private static final long ONE_DAY = 1000L * 60L * 60L * 24L;
 
     /**
-     * The name of the property which specifies the signature algorithm used 
-     * during certificate creation. When a certificate is created and this 
+     * The name of the property which specifies the signature algorithm used
+     * during certificate creation. When a certificate is created and this
      * property is not set, a default value of "SHA1withRSA" will be used.
      */
-    public static final String PROP_SIGNATURE_ALGORITHM = 
+    public static final String PROP_SIGNATURE_ALGORITHM =
         "org.jitsi.impl.neomedia.transform.dtls.SIGNATURE_ALGORITHM";
+
+    /**
+     * The name of the property to specify RSA Key length.
+     */
+    public static final String RSA_KEY_SIZE_PNAME =
+        "org.jitsi.impl.neomedia.transform.dtls.RSA_KEY_SIZE";
+
+    /**
+     * The default RSA key size when configuration properties are not found.
+     */
+    public static final int DEFAULT_RSA_KEY_SIZE = 1024;
+
+    /**
+     * The RSA key size to use.
+     * The default value is {@code DEFAULT_RSA_KEY_SIZE} but may be overridden
+     * by the {@code ConfigurationService} and/or {@code System} property
+     * {@code RSA_KEY_SIZE_PNAME}.
+     */
+    public static final int RSA_KEY_SIZE;
+
+    /**
+     * The name of the property to specify RSA key size certainty.
+     * https://docs.oracle.com/javase/7/docs/api/java/math/BigInteger.html
+     */
+    public static final String RSA_KEY_SIZE_CERTAINTY_PNAME =
+        "org.jitsi.impl.neomedia.transform.dtls.RSA_KEY_SIZE_CERTAINTY";
+
+    /**
+     * The RSA key size certainty to use.
+     * The default value is {@code DEFAULT_RSA_KEY_SIZE_CERTAINTY} but may be
+     * overridden by the {@code ConfigurationService} and/or {@code System}
+     * property {@code RSA_KEY_SIZE_CERTAINTY_PNAME}.
+     * For more on certainty, look at the three parameter constructor here:
+     * https://docs.oracle.com/javase/7/docs/api/java/math/BigInteger.html
+     */
+    public static final int RSA_KEY_SIZE_CERTAINTY;
+
+    /**
+     * The default RSA key size certainty when config properties are not found.
+     */
+    public static final int DEFAULT_RSA_KEY_SIZE_CERTAINTY = 80;
+
+    /**
+     * The name of the property to specify DTLS certificate cache expiration.
+     */
+    public static final String CERT_CACHE_EXPIRE_TIME_PNAME =
+        "org.jitsi.impl.neomedia.transform.dtls.CERT_CACHE_EXPIRE_TIME";
+
+
+    /**
+     * The certificate cache expiration time to use, in milliseconds.
+     * The default value is {@code DEFAULT_CERT_CACHE_EXPIRE_TIME} but may be
+     * overridden by the {@code ConfigurationService} and/or {@code System}
+     * property {@code CERT_CACHE_EXPIRE_TIME_PNAME}.
+     */
+    public static final long CERT_CACHE_EXPIRE_TIME;
+
+    /**
+     * The default certificate cache expiration time, when config properties
+     * are not found.
+     */
+    public static final long DEFAULT_CERT_CACHE_EXPIRE_TIME = ONE_DAY;
+
+    /**
+     * The public exponent to always use for RSA key generation.
+     */
+    public static final BigInteger RSA_KEY_PUBLIC_EXPONENT
+        = new BigInteger("10001", 16);
 
     /**
      * The <tt>SRTPProtectionProfile</tt>s supported by
@@ -116,28 +181,39 @@ public class DtlsControlImpl
     private static final String VERIFY_AND_VALIDATE_CERTIFICATE_PNAME
         = DtlsControlImpl.class.getName() + ".verifyAndValidateCertificate";
 
+    /**
+     * The cache of {@link #certificateInfo} so that we do not invoke CPU
+     * intensive methods for each new {@code DtlsControlImpl} instance.
+     */
+    private static CertificateInfo certificateInfoCache;
+
     static
     {
-        // VERIFY_AND_VALIDATE_CERTIFICATE
-        ConfigurationService cfg = LibJitsi.getConfigurationService();
-        boolean verifyAndValidateCertificate = true;
+        // Set configurable options using ConfigurationService.
 
-        if (cfg == null)
-        {
-            String s
-                = System.getProperty(VERIFY_AND_VALIDATE_CERTIFICATE_PNAME);
+        VERIFY_AND_VALIDATE_CERTIFICATE
+            = ConfigUtils.getBoolean(
+                    LibJitsi.getConfigurationService(),
+                    VERIFY_AND_VALIDATE_CERTIFICATE_PNAME,
+                    true);
 
-            if (s != null)
-                verifyAndValidateCertificate = Boolean.parseBoolean(s);
-        }
-        else
-        {
-            verifyAndValidateCertificate
-                = cfg.getBoolean(
-                        VERIFY_AND_VALIDATE_CERTIFICATE_PNAME,
-                        verifyAndValidateCertificate);
-        }
-        VERIFY_AND_VALIDATE_CERTIFICATE = verifyAndValidateCertificate;
+        RSA_KEY_SIZE
+            = ConfigUtils.getInt(
+                    LibJitsi.getConfigurationService(),
+                    RSA_KEY_SIZE_PNAME,
+                    DEFAULT_RSA_KEY_SIZE);
+
+        RSA_KEY_SIZE_CERTAINTY
+            = ConfigUtils.getInt(
+                LibJitsi.getConfigurationService(),
+                    RSA_KEY_SIZE_CERTAINTY_PNAME,
+                    DEFAULT_RSA_KEY_SIZE_CERTAINTY);
+
+        CERT_CACHE_EXPIRE_TIME
+            = ConfigUtils.getLong(
+                LibJitsi.getConfigurationService(),
+                    CERT_CACHE_EXPIRE_TIME_PNAME,
+                    DEFAULT_CERT_CACHE_EXPIRE_TIME);
 
         // HASH_FUNCTION_UPGRADES
         HASH_FUNCTION_UPGRADES.put(
@@ -155,18 +231,14 @@ public class DtlsControlImpl
      */
     static int chooseSRTPProtectionProfile(int... theirs)
     {
-        int[] ours = SRTP_PROTECTION_PROFILES;
-
         if (theirs != null)
         {
-            for (int t = 0; t < theirs.length; t++)
+            int[] ours = SRTP_PROTECTION_PROFILES;
+
+            for (int their : theirs)
             {
-                int their = theirs[t];
-
-                for (int o = 0; o < ours.length; o++)
+                for (int our : ours)
                 {
-                    int our = ours[o];
-
                     if (their == our)
                         return their;
                 }
@@ -182,11 +254,11 @@ public class DtlsControlImpl
      * @param certificate the certificate the fingerprint of which is to be
      * computed
      * @param hashFunction the hash function to be used in order to compute the
-     * fingerprint of the specified <tt>certificate</tt> 
+     * fingerprint of the specified <tt>certificate</tt>
      * @return the fingerprint of the specified <tt>certificate</tt> computed
      * using the specified <tt>hashFunction</tt>
      */
-    private static final String computeFingerprint(
+    private static String computeFingerprint(
             org.bouncycastle.asn1.x509.Certificate certificate,
             String hashFunction)
     {
@@ -219,48 +291,6 @@ public class DtlsControlImpl
                     throw new RuntimeException(t);
             }
         }
-    }
-
-    /**
-     * Initializes a new <tt>SecureRandom</tt> instance. Implements a
-     * <tt>SecureRandom</tt> factory to be employed by classes related to
-     * <tt>DtlsControlImpl</tt>.
-     *
-     * @return a new <tt>SecureRandom</tt> instance
-     */
-    @SuppressWarnings("serial")
-    static SecureRandom createSecureRandom()
-    {
-        return
-            new SecureRandom()
-            {
-                /**
-                 * {@inheritDoc}
-                 *
-                 * Employs <tt>ZrtpFortuna</tt> as is common in neomedia. Most
-                 * importantly though, works around a possible hang on Linux
-                 * when reading from <tt>/dev/random</tt>.
-                 */
-                @Override
-                public byte[] generateSeed(int numBytes)
-                {
-                    byte[] seed = new byte[numBytes];
-
-                    ZrtpFortuna.getInstance().nextBytes(seed);
-                    return seed;
-                }
-
-                /**
-                 * {@inheritDoc}
-                 *
-                 * Employs <tt>ZrtpFortuna</tt> as is common in neomedia.
-                 */
-                @Override
-                public void nextBytes(byte[] bytes)
-                {
-                    ZrtpFortuna.getInstance().nextBytes(bytes);
-                }
-            };
     }
 
     /**
@@ -318,8 +348,8 @@ public class DtlsControlImpl
      * associations
      * @return a hash function written in lower case which is an
      * &quot;upgrade&quot; of the specified {@code hashFunction} and has a
-     * fingerprint associated with it in {@code fingerprints} if there is such a
-     * hash function; otherwise, {@code null}
+     * fingerprint associated with it in {@code fingerprints} if there is such
+     * a hash function; otherwise, {@code null}
      */
     private static String findHashFunctionUpgrade(
             String hashFunction,
@@ -342,9 +372,47 @@ public class DtlsControlImpl
     }
 
     /**
+     * Generates a new certificate from a new key pair, determines the hash
+     * function, and computes the fingerprint.
+     *
+     * @return CertificateInfo a new certificate generated from a new key pair,
+     * its hash function, and fingerprint
+     */
+    private static CertificateInfo generateCertificateInfo()
+    {
+        AsymmetricCipherKeyPair keyPair = generateKeyPair();
+
+        org.bouncycastle.asn1.x509.Certificate x509Certificate
+            = generateX509Certificate(generateCN(), keyPair);
+
+        org.bouncycastle.crypto.tls.Certificate certificate
+            = new org.bouncycastle.crypto.tls.Certificate(
+                    new org.bouncycastle.asn1.x509.Certificate[]
+                    {
+                        x509Certificate
+                    });
+        String localFingerprintHashFunction
+            = findHashFunction(x509Certificate);
+        String localFingerprint
+            = computeFingerprint(
+                    x509Certificate,
+                    localFingerprintHashFunction);
+
+        long timestamp = System.currentTimeMillis();
+
+        return
+            new CertificateInfo(
+                    keyPair,
+                    certificate,
+                    localFingerprintHashFunction,
+                    localFingerprint,
+                    timestamp);
+    }
+
+    /**
      * Generates a new subject for a self-signed certificate to be generated by
      * <tt>DtlsControlImpl</tt>.
-     * 
+     *
      * @return an <tt>X500Name</tt> which is to be used as the subject of a
      * self-signed certificate to be generated by <tt>DtlsControlImpl</tt>
      */
@@ -373,9 +441,9 @@ public class DtlsControlImpl
     }
 
     /**
-     * Generates a new pair of private and public keys.
+     * Return a pair of RSA private and public keys.
      *
-     * @return a new pair of private and public keys
+     * @return a pair of private and public keys
      */
     private static AsymmetricCipherKeyPair generateKeyPair()
     {
@@ -383,10 +451,10 @@ public class DtlsControlImpl
 
         generator.init(
                 new RSAKeyGenerationParameters(
-                        new BigInteger("10001", 16),
-                        createSecureRandom(),
-                        1024,
-                        80));
+                        RSA_KEY_PUBLIC_EXPONENT,
+                        new SecureRandom(),
+                        RSA_KEY_SIZE,
+                        RSA_KEY_SIZE_CERTAINTY));
         return generator.generateKeyPair();
     }
 
@@ -398,7 +466,7 @@ public class DtlsControlImpl
      * generated
      * @param keyPair the pair of private and public keys of the certificate to
      * be generated
-     * @return a new self-signed certificate with the specified 
+     * @return a new self-signed certificate with the specified
      * <tt>subject</tt> and <tt>keyPair</tt>
      */
     private static org.bouncycastle.asn1.x509.Certificate
@@ -406,25 +474,23 @@ public class DtlsControlImpl
                 X500Name subject,
                 AsymmetricCipherKeyPair keyPair)
     {
-        // get property for certificate creation and default to sha1
-        String signatureAlgorithm = "SHA1withRSA";
-        // get property override from the config service if it exists
-        ConfigurationService cfg = LibJitsi.getConfigurationService();
+        // The signature algorithm of the generated certificate defaults to
+        // SHA1. However, allow the overriding of the default via the
+        // ConfigurationService.
+        String signatureAlgorithm
+            = ConfigUtils.getString(
+                    LibJitsi.getConfigurationService(),
+                    PROP_SIGNATURE_ALGORITHM,
+                    "SHA1withRSA");
 
-        if (cfg != null)
-        {
-            signatureAlgorithm
-                = cfg.getString(PROP_SIGNATURE_ALGORITHM, "SHA1withRSA");
-        }        
         if (logger.isDebugEnabled())
-        {
             logger.debug("Signature algorithm: " + signatureAlgorithm);
-        }
+
         try
         {
             long now = System.currentTimeMillis();
             Date notBefore = new Date(now - ONE_DAY);
-            Date notAfter = new Date(now + 6 * ONE_DAY);
+            Date notAfter = new Date(now + ONE_DAY * 6 + CERT_CACHE_EXPIRE_TIME);
             X509v3CertificateBuilder builder
                 = new X509v3CertificateBuilder(
                         /* issuer */ subject,
@@ -472,7 +538,7 @@ public class DtlsControlImpl
      *
      * @param fingerprint an array of <tt>bytes</tt> which represents a
      * fingerprint the <tt>String</tt> representation in accord with RFC 4572
-     * of which is to be returned 
+     * of which is to be returned
      * @return the <tt>String</tt> representation in accord with RFC 4572 of the
      * specified <tt>fingerprint</tt>
      */
@@ -498,22 +564,11 @@ public class DtlsControlImpl
     }
 
     /**
-     * The certificate with which the local endpoint represented by this
-     * instance authenticates its ends of DTLS sessions. 
+     * The certificate, hash function, fingerprint, etc. with which the local
+     * endpoint represented by this instance authenticates its ends of DTLS
+     * sessions.
      */
-    private final org.bouncycastle.crypto.tls.Certificate certificate;
-
-    /**
-     * The <tt>RTPConnector</tt> which uses the <tt>TransformEngine</tt> of this
-     * <tt>SrtpControl</tt>.
-     */
-    private AbstractRTPConnector connector;
-
-    /**
-     * Indicates whether this <tt>DtlsControl</tt> will work in DTLS/SRTP or
-     * DTLS mode.
-     */
-    private final boolean disableSRTP;
+    private final CertificateInfo certificateInfo;
 
     /**
      * The indicator which determines whether this instance has been disposed
@@ -522,45 +577,16 @@ public class DtlsControlImpl
     private boolean disposed = false;
 
     /**
-     * The private and public keys of {@link #certificate}.
-     */
-    private final AsymmetricCipherKeyPair keyPair;
-
-    /**
-     * The fingerprint of {@link #certificate}.
-     */
-    private final String localFingerprint;
-
-    /**
-     * The hash function of {@link #localFingerprint} (which is the same as the
-     * digest algorithm of the signature algorithm of {@link #certificate} in
-     * accord with RFC 4572).
-     */
-    private final String localFingerprintHashFunction;
-
-    /**
-     * The fingerprints presented by the remote endpoint via the signaling path. 
+     * The fingerprints presented by the remote endpoint via the signaling path.
      */
     private Map<String,String> remoteFingerprints;
 
     /**
-     * Whether rtcp-mux is in use.
+     * The properties of {@code DtlsControlImpl} and their values which this
+     * instance shares with {@link DtlsTransformEngine} and
+     * {@link DtlsPacketTransformer}.
      */
-    private boolean rtcpmux = false;
-
-    /**
-     * The value of the <tt>setup</tt> SDP attribute defined by RFC 4145
-     * &quot;TCP-Based Media Transport in the Session Description Protocol
-     * (SDP)&quot; which determines whether this instance acts as a DTLS client
-     * or a DTLS server.
-     */
-    private Setup setup;
-
-    /**
-     * The instances currently registered as users of this <tt>SrtpControl</tt>
-     * (through {@link #registerUser(Object)}).
-     */
-    private final Set<Object> users = new HashSet<Object>();
+    private final Properties properties;
 
     /**
      * Initializes a new <tt>DtlsControlImpl</tt> instance.
@@ -568,54 +594,49 @@ public class DtlsControlImpl
     public DtlsControlImpl()
     {
         // By default we work in DTLS/SRTP mode.
-        this(false);
+        this(/* srtpDisabled */ false);
     }
 
     /**
      * Initializes a new <tt>DtlsControlImpl</tt> instance.
-     * @param disableSRTP <tt>true</tt> if pure DTLS mode without SRTP
-     *                    extensions should be used.
+     *
+     * @param srtpDisabled <tt>true</tt> if pure DTLS mode without SRTP
+     * extensions is to be used; otherwise, <tt>false</tt>
      */
-    public DtlsControlImpl(boolean disableSRTP)
+    public DtlsControlImpl(boolean srtpDisabled)
     {
         super(SrtpControlType.DTLS_SRTP);
 
-        this.disableSRTP = disableSRTP;
+        CertificateInfo certificateInfo;
 
-        keyPair = generateKeyPair();
-
-        org.bouncycastle.asn1.x509.Certificate x509Certificate
-            = generateX509Certificate(generateCN(), keyPair);
-
-        certificate
-            = new org.bouncycastle.crypto.tls.Certificate(
-                    new org.bouncycastle.asn1.x509.Certificate[]
-                            {
-                                x509Certificate
-                            });
-        localFingerprintHashFunction = findHashFunction(x509Certificate);
-        localFingerprint
-            = computeFingerprint(
-                    x509Certificate,
-                    localFingerprintHashFunction);
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public void cleanup(Object user)
-    {
-        synchronized (users)
+        // The methods generateKeyPair(), generateX509Certificate(),
+        // findHashFunction(), and/or computeFingerprint() may be too CPU
+        // intensive to invoke for each new DtlsControlImpl instance. That's
+        // why we've decided to reuse their return values within a certain time
+        // frame. Attempt to retrieve from the cache.
+        synchronized (DtlsControlImpl.class)
         {
-            if (users.remove(user) && users.isEmpty())
-                doCleanup();
+            certificateInfo = certificateInfoCache;
+            if (certificateInfo == null
+                    || certificateInfo.timestamp + CERT_CACHE_EXPIRE_TIME
+                        < System.currentTimeMillis())
+            {
+                // The cache doesn't exist yet or has outlived its lifetime.
+                // Rebuild the cache.
+                certificateInfoCache
+                    = certificateInfo
+                        = generateCertificateInfo();
+            }
         }
+        this.certificateInfo = certificateInfo;
+
+        properties = new Properties(srtpDisabled);
     }
 
     /**
      * Initializes a new <tt>DtlsTransformEngine</tt> instance to be associated
-     * with and used by this <tt>DtlsControlImpl</tt> instance.
+     * with and used by this <tt>DtlsControlImpl</tt> instance. The method is
+     * implemented as a factory.
      *
      * @return a new <tt>DtlsTransformEngine</tt> instance to be associated with
      * and used by this <tt>DtlsControlImpl</tt> instance
@@ -623,20 +644,16 @@ public class DtlsControlImpl
     @Override
     protected DtlsTransformEngine createTransformEngine()
     {
-        DtlsTransformEngine transformEngine = new DtlsTransformEngine(this);
-
-        transformEngine.setConnector(connector);
-        transformEngine.setSetup(setup);
-        transformEngine.setRtcpmux(rtcpmux);
-        return transformEngine;
+        return new DtlsTransformEngine(this);
     }
 
     /**
-     * Prepares this <tt>DtlsControlImpl</tt> for garbage collection.
+     * {@inheritDoc}
      */
-    private void doCleanup()
+    @Override
+    protected void doCleanup()
     {
-        super.cleanup(null);
+        super.doCleanup();
 
         setConnector(null);
 
@@ -648,26 +665,17 @@ public class DtlsControlImpl
     }
 
     /**
-     * Gets the certificate with which the local endpoint represented by this
-     * instance authenticates its ends of DTLS sessions.
+     * Gets the certificate, hash function, fingerprint, etc. with which the
+     * local endpoint represented by this instance authenticates its ends of
+     * DTLS sessions.
      *
-     * @return the certificate with which the local endpoint represented by this
-     * instance authenticates its ends of DTLS sessions.
+     * @return the certificate, hash function, fingerprint, etc. with which the
+     * local endpoint represented by this instance authenticates its ends of
+     * DTLS sessions
      */
-    org.bouncycastle.crypto.tls.Certificate getCertificate()
+    CertificateInfo getCertificateInfo()
     {
-        return certificate;
-    }
-
-    /**
-     * The private and public keys of the <tt>certificate</tt> of this instance.
-     *
-     * @return the private and public keys of the <tt>certificate</tt> of this
-     * instance
-     */
-    AsymmetricCipherKeyPair getKeyPair()
-    {
-        return keyPair;
+        return certificateInfo;
     }
 
     /**
@@ -676,7 +684,7 @@ public class DtlsControlImpl
     @Override
     public String getLocalFingerprint()
     {
-        return localFingerprint;
+        return getCertificateInfo().localFingerprint;
     }
 
     /**
@@ -685,7 +693,21 @@ public class DtlsControlImpl
     @Override
     public String getLocalFingerprintHashFunction()
     {
-        return localFingerprintHashFunction;
+        return getCertificateInfo().localFingerprintHashFunction;
+    }
+
+    /**
+     * Gets the properties of {@code DtlsControlImpl} and their values which
+     * this instance shares with {@link DtlsTransformEngine} and
+     * {@link DtlsPacketTransformer}.
+     *
+     * @return the properties of {@code DtlsControlImpl} and their values which
+     * this instance shares with {@code DtlsTransformEngine} and
+     * {@code DtlsPacketTransformer}
+     */
+    Properties getProperties()
+    {
+        return properties;
     }
 
     /**
@@ -699,25 +721,19 @@ public class DtlsControlImpl
     }
 
     /**
-     * Indicates if SRTP extensions are disabled which means we're working in
-     * pure DTLS mode.
-     * @return <tt>true</tt> if SRTP extensions must be disabled.
+     * Gets the value of the {@code setup} SDP attribute defined by RFC 4145
+     * &quot;TCP-Based Media Transport in the Session Description Protocol
+     * (SDP)&quot; which determines whether this instance acts as a DTLS client
+     * or a DTLS server.
+     *
+     * @return the value of the {@code setup} SDP attribute defined by RFC 4145
+     * &quot;TCP-Based Media Transport in the Session Description Protocol
+     * (SDP)&quot; which determines whether this instance acts as a DTLS client
+     * or a DTLS server
      */
-    boolean isSrtpDisabled()
+    public DtlsControl.Setup getSetup()
     {
-        return disableSRTP;
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public void registerUser(Object user)
-    {
-        synchronized (users)
-        {
-            users.add(user);
-        }
+        return getProperties().getSetup();
     }
 
     /**
@@ -738,15 +754,7 @@ public class DtlsControlImpl
     @Override
     public void setConnector(AbstractRTPConnector connector)
     {
-        if (this.connector != connector)
-        {
-            this.connector = connector;
-
-            DtlsTransformEngine transformEngine = this.transformEngine;
-
-            if (transformEngine != null)
-                transformEngine.setConnector(this.connector);
-        }
+        properties.put(Properties.CONNECTOR_PNAME, connector);
     }
 
     /**
@@ -758,33 +766,27 @@ public class DtlsControlImpl
         if (remoteFingerprints == null)
             throw new NullPointerException("remoteFingerprints");
 
-        synchronized (this)
+        // Make sure that the hash functions (which are keys of the field
+        // remoteFingerprints) are written in lower case.
+        Map<String,String> rfs = new HashMap<>(remoteFingerprints.size());
+
+        for (Map.Entry<String,String> e : remoteFingerprints.entrySet())
         {
-            // Make sure that the hash functions (which are keys of the field
-            // remoteFingerprints) are written in lower case.
-            Map<String,String> rfs
-                = new HashMap<String,String>(remoteFingerprints.size());
+            String k = e.getKey();
 
-            for (Map.Entry<String,String> e : remoteFingerprints.entrySet())
+            // It makes no sense to provide a fingerprint without a hash
+            // function.
+            if (k != null)
             {
-                String k = e.getKey();
+                String v = e.getValue();
 
-                // It makes no sense to provide a fingerprint without a hash
-                // function.
-                if (k != null)
-                {
-                    String v = e.getValue();
-
-                    // It makes no sense to provide a hash function without a
-                    // fingerprint.
-                    if (v != null)
-                        rfs.put(k.toLowerCase(), v);
-                }
+                // It makes no sense to provide a hash function without a
+                // fingerprint.
+                if (v != null)
+                    rfs.put(k.toLowerCase(), v);
             }
-            this.remoteFingerprints = rfs;
-
-            notifyAll();
         }
+        this.remoteFingerprints = rfs;
     }
 
     /**
@@ -793,15 +795,7 @@ public class DtlsControlImpl
     @Override
     public void setRtcpmux(boolean rtcpmux)
     {
-        if (this.rtcpmux != rtcpmux)
-        {
-            this.rtcpmux = rtcpmux;
-
-            DtlsTransformEngine transformEngine = this.transformEngine;
-
-            if (transformEngine != null)
-                transformEngine.setRtcpmux(rtcpmux);
-        }
+        properties.put(Properties.RTCPMUX_PNAME, rtcpmux);
     }
 
     /**
@@ -810,15 +804,7 @@ public class DtlsControlImpl
     @Override
     public void setSetup(Setup setup)
     {
-        if (this.setup != setup)
-        {
-            this.setup = setup;
-
-            DtlsTransformEngine transformEngine = this.transformEngine;
-
-            if (transformEngine != null)
-                transformEngine.setSetup(this.setup);
-        }
+        properties.put(Properties.SETUP_PNAME, setup);
     }
 
     /**
@@ -827,10 +813,7 @@ public class DtlsControlImpl
     @Override
     public void start(MediaType mediaType)
     {
-        DtlsTransformEngine transformEngine = getTransformEngine();
-
-        if (transformEngine != null)
-            transformEngine.start(mediaType);
+        properties.put(Properties.MEDIA_TYPE_PNAME, mediaType);
     }
 
     /**
@@ -867,6 +850,7 @@ public class DtlsControlImpl
             {
                 throw new IllegalStateException("disposed");
             }
+
             Map<String,String> remoteFingerprints = this.remoteFingerprints;
 
             if (remoteFingerprints == null)

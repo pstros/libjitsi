@@ -66,6 +66,12 @@ public class RecorderRtpImpl
     private static final Logger logger
             = Logger.getLogger(RecorderRtpImpl.class);
 
+    /**
+     * The <tt>ConfigurationService</tt> used to load recorder configuration.
+     */
+    private static final ConfigurationService cfg
+            = LibJitsi.getConfigurationService();
+
     //values hard-coded to match chrome
     //TODO: allow to set them dynamically
     private static final byte redPayloadType = 116;
@@ -82,8 +88,25 @@ public class RecorderRtpImpl
                               Format.NOT_SPECIFIED,
                               Format.NOT_SPECIFIED);
 
-    private static final int FMJ_VIDEO_JITTER_BUFFER_MIN_SIZE = 300;
-    private static final int FMJ_AUDIO_JITTER_BUFFER_MIN_SIZE = 16;
+    /**
+     * Config parameter for FMJ video jitter size
+     */
+    private static final String FMJ_VIDEO_JITTER_BUFFER_MIN_SIZE_PNAME =
+            RecorderRtpImpl.class.getCanonicalName() +
+                    ".FMJ_VIDEO_JITTER_BUFFER_MIN_SIZE";
+
+    private static final int FMJ_VIDEO_JITTER_BUFFER_MIN_SIZE =
+            cfg.getInt(FMJ_VIDEO_JITTER_BUFFER_MIN_SIZE_PNAME, 300);
+
+    /**
+     * Config parameter for FMJ audio jitter size
+     */
+    private static final String FMJ_AUDIO_JITTER_BUFFER_MIN_SIZE_PNAME =
+            RecorderRtpImpl.class.getCanonicalName() +
+                    ".FMJ_AUDIO_JITTER_BUFFER_MIN_SIZE_PNAME";
+
+    private static final int FMJ_AUDIO_JITTER_BUFFER_MIN_SIZE =
+            cfg.getInt(FMJ_AUDIO_JITTER_BUFFER_MIN_SIZE_PNAME, 16);
 
     /**
      * The name of the property which controls whether the recorder should
@@ -93,15 +116,22 @@ public class RecorderRtpImpl
             RecorderRtpImpl.class.getCanonicalName() + ".PERFORM_ASD";
 
     /**
+     * The name of the property which sets a custom output audio codec.
+     * Currently only WAV is supported
+     */
+    private static String AUDIO_CODEC_PNAME =
+            RecorderRtpImpl.class.getCanonicalName() + ".AUDIO_CODEC";
+
+    /**
      * The <tt>ContentDescriptor</tt> to use when saving audio.
      */
-    private static final ContentDescriptor AUDIO_CONTENT_DESCRIPTOR
+    private static ContentDescriptor AUDIO_CONTENT_DESCRIPTOR
             = new ContentDescriptor(FileTypeDescriptor.MPEG_AUDIO);
 
     /**
      * The suffix for audio file names.
      */
-    private static final String AUDIO_FILENAME_SUFFIX = ".mp3";
+    private static String AUDIO_FILENAME_SUFFIX = ".mp3";
 
     /**
      * The suffix for video file names.
@@ -193,7 +223,6 @@ public class RecorderRtpImpl
         this.translator = (RTPTranslatorImpl) translator;
 
         boolean performActiveSpeakerDetection = false;
-        ConfigurationService cfg = LibJitsi.getConfigurationService();
 
         if (cfg != null)
         {
@@ -201,6 +230,14 @@ public class RecorderRtpImpl
                 = cfg.getBoolean(
                         PERFORM_ASD_PNAME,
                         performActiveSpeakerDetection);
+
+            // setting custom audio codec
+            String audioCodec = cfg.getString(AUDIO_CODEC_PNAME);
+            if ("wav".equalsIgnoreCase(audioCodec)) {
+                AUDIO_FILENAME_SUFFIX = ".wav";
+                AUDIO_CONTENT_DESCRIPTOR
+                        = new ContentDescriptor(FileTypeDescriptor.WAVE);
+            }
         }
         this.performActiveSpeakerDetection = performActiveSpeakerDetection;
     }
@@ -1128,15 +1165,15 @@ public class RecorderRtpImpl
     {
         if (pkt != null && pkt.getPayloadType() == vp8PayloadType)
         {
-            int ssrc = pkt.getSSRC();
-            if (!activeVideoSsrcs.contains(ssrc & 0xffffffffL))
+            long ssrc = pkt.getSSRCAsLong();
+            if (!activeVideoSsrcs.contains(ssrc))
             {
                 synchronized (activeVideoSsrcs)
                 {
-                    if (!activeVideoSsrcs.contains(ssrc & 0xffffffffL))
+                    if (!activeVideoSsrcs.contains(ssrc))
                     {
-                        activeVideoSsrcs.add(ssrc & 0xffffffffL);
-                        rtcpFeedbackSender.sendFIR(ssrc);
+                        activeVideoSsrcs.add(ssrc);
+                        rtcpFeedbackSender.sendFIR((int) ssrc);
                     }
                 }
             }
@@ -1632,7 +1669,7 @@ public class RecorderRtpImpl
                         // it gets to FMJ, because we want to, for example,
                         // flush the packet buffer before that.
 
-                        long ssrc = pkt.getRTCPSSRC() & 0xffffffffl;
+                        long ssrc = pkt.getRTCPSSRCAsLong();
                         if (logger.isInfoEnabled())
                             logger.info("RTCP BYE for SSRC="+ssrc);
 
