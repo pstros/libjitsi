@@ -59,6 +59,11 @@
       <os arch="x86_64" />
     </or>
   </condition>
+  <condition property="arch" value="arm">
+    <or>
+      <os arch="arm" />
+    </or>
+  </condition>
   <condition property="is.running.windows_32" value="y">
     <and>
       <isset property="is.running.windows"/>
@@ -116,6 +121,13 @@
     <and>
       <isset property="is.running.linux"/>
       <equals arg1="${arch}" arg2="64" />
+    </and>
+  </condition>
+
+  <condition property="native_install_dir" value="${native.libs}/linux-arm">
+    <and>
+      <isset property="is.running.linux"/>
+      <equals arg1="${arch}" arg2="arm" />
     </and>
   </condition>
 

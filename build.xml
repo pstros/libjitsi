@@ -237,6 +237,12 @@
           <zipfileset dir="lib/native/linux-x86-64" includes="*.so"
                       prefix="lib/native/linux-x86-64"/>
       </zip>
+      <zip destfile="${dist}/linux/libjitsi-${build.label}-arm.zip">
+          <zipfileset file="libjitsi.jar" />
+          <zipfileset dir="lib" includes="*.jar" prefix="lib"/>
+          <zipfileset dir="lib/native/linux-arm" includes="*.so"
+                      prefix="lib/native/linux-arm"/>
+      </zip>
       <zip destfile="${dist}/src/libjitsi-src-${build.label}.zip">
         <zipfileset dir="." prefix="libjitsi">
             <exclude name="classes/"/>
