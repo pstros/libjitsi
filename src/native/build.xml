@@ -59,6 +59,11 @@
       <os arch="x86_64" />
     </or>
   </condition>
+  <condition property="arch" value="arm">
+    <or>
+      <os arch="arm" />
+    </or>
+  </condition>
   <condition property="is.running.windows_32" value="y">
     <and>
       <isset property="is.running.windows"/>
@@ -83,6 +88,10 @@
 
   <condition property="cross_64" value="y" >
     <equals arg1="${arch}" arg2="64" />
+  </condition>
+
+  <condition property="cross_arm" value="y" >
+    <equals arg1="${arch}" arg2="arm" />
   </condition>
 
   <!-- Mac OS X only -->
@@ -116,6 +125,13 @@
     <and>
       <isset property="is.running.linux"/>
       <equals arg1="${arch}" arg2="64" />
+    </and>
+  </condition>
+
+  <condition property="native_install_dir" value="${native.libs}/linux-arm">
+    <and>
+      <isset property="is.running.linux"/>
+      <equals arg1="${arch}" arg2="arm" />
     </and>
   </condition>
 
@@ -178,11 +194,13 @@
       <!-- Linux specific flags -->
       <compilerarg value="-m32" if="cross_32" unless="is.running.macos" />
       <compilerarg value="-m64" if="cross_64" unless="is.running.macos" />
+      <compilerarg value="-marm" if="cross_arm" unless="is.running.macos" />
       <compilerarg value="-I${system.JAVA_HOME}/include" if="is.running.linux" />
       <compilerarg value="-I${system.JAVA_HOME}/include/linux" if="is.running.linux" />
 
       <linkerarg value="-m32" if="cross_32" unless="is.running.macos" />
       <linkerarg value="-m64" if="cross_64" unless="is.running.macos" />
+      <linkerarg value="-marm" if="cross_arm" unless="is.running.macos" />
       <linkerarg value="-Wl,--no-undefined" unless="is.running.macos" />
       <linkerarg value="-Wl,-z,relro" if="is.running.debian"/>
       <linkerarg value="-lX11" location="end" if="is.running.linux" />
@@ -230,6 +248,7 @@
       <compilerarg value="-D_JNI_IMPLEMENTATION_" />
       <compilerarg value="-m32" if="cross_32" unless="is.running.macos" />
       <compilerarg value="-m64" if="cross_64" unless="is.running.macos" />
+      <compilerarg value="-marm" if="cross_arm" unless="is.running.macos" />
       <compilerarg value="-O2" />
       <compilerarg value="-std=c99" />
       <compilerarg value="-Wall" />
@@ -238,6 +257,7 @@
 
       <linkerarg value="-m32" if="cross_32" unless="is.running.macos" />
       <linkerarg value="-m64" if="cross_64" unless="is.running.macos" />
+      <linkerarg value="-marm" if="cross_arm" unless="is.running.macos" />
       <linkerarg value="-ljawt" location="end" />
 
       <!-- Linux-specific flags -->
@@ -496,6 +516,7 @@
       <!-- Common flags -->
       <compilerarg value="-m32" if="cross_32" unless="is.running.macos" />
       <compilerarg value="-m64" if="cross_64" unless="is.running.macos" />
+      <compilerarg value="-marm" if="cross_arm" unless="is.running.macos" />
       <compilerarg value="-D_JNI_IMPLEMENTATION_" />
       <compilerarg value="-fPIC" />
       <compilerarg value="-I${portaudio}/include" />
@@ -507,6 +528,7 @@
 
       <linkerarg value="-m32" if="cross_32" unless="is.running.macos" />
       <linkerarg value="-m64" if="cross_64" unless="is.running.macos" />
+      <linkerarg value="-marm" if="cross_arm" unless="is.running.macos" />
       <linkerarg value="-L${portaudio}/lib/.libs" />
       <linkerarg value="-L${speex}/libspeex/.libs" />
 
@@ -620,11 +642,13 @@
       <!-- Linux specific flags -->
       <compilerarg value="-m32" if="cross_32" unless="is.running.macos" />
       <compilerarg value="-m64" if="cross_64" unless="is.running.macos" />
+      <compilerarg value="-marm" if="cross_arm" unless="is.running.macos" />
       <compilerarg value="-I${system.JAVA_HOME}/include" if="is.running.linux" />
       <compilerarg value="-I${system.JAVA_HOME}/include/linux" if="is.running.linux" />
 
       <linkerarg value="-m32" if="cross_32" unless="is.running.macos" />
       <linkerarg value="-m64" if="cross_64" unless="is.running.macos" />
+      <linkerarg value="-marm" if="cross_arm" unless="is.running.macos" />
 
       <!-- static libraries MUST be at the end otherwise
       they will not be added to shared library
@@ -1325,9 +1349,11 @@
 
             <compilerarg value="-m32" if="cross_32" />
             <compilerarg value="-m64" if="cross_64" />
+            <compilerarg value="-marm" if="cross_arm" />
 
             <linkerarg value="-m32" if="cross_32" />
             <linkerarg value="-m64" if="cross_64" />
+            <linkerarg value="-marm" if="cross_arm" />
 
             <linkerarg value="-Wl,-z,relro" if="is.running.debian"/>
             <linkerarg value="-Wl,-Bstatic" location="end" />
