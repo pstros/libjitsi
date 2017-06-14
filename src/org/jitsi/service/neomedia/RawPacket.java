@@ -55,7 +55,16 @@ public class RawPacket
     public static final int FIXED_HEADER_SIZE = 12;
 
     /**
+     * The minimum size in bytes of a valid RTCP packet. An empty Receiver
+     * Report is 8 bytes long.
+     */
+    private static final int RTCP_MIN_SIZE = 8;
+
+    /**
      * Byte array storing the content of this Packet
+     * Note that if this instance changes, then {@link #headerExtensions} MUST
+     * be reinitialized. It is best to use {@link #setBuffer(byte[])} instead of
+     * accessing this field directly.
      */
     private byte[] buffer;
 
@@ -193,9 +202,21 @@ public class RawPacket
      */
     public static boolean isInvalid(byte[] buffer, int offset, int length)
     {
-        return (buffer == null)
-            || (buffer.length < offset + length)
-            || (length < FIXED_HEADER_SIZE);
+        // RTP packets are at least 12 bytes long, RTCP packets can be 8.
+        if (buffer == null || buffer.length < offset + length
+            || length < RTCP_MIN_SIZE)
+        {
+            return true;
+        }
+
+        int pt = buffer[offset + 1] & 0xff;
+        if (pt < 200 || pt > 211)
+        {
+            // This is an RTP packet.
+            return length < FIXED_HEADER_SIZE;
+        }
+
+        return false;
     }
 
     /**
@@ -444,7 +465,7 @@ public class RawPacket
         }
 
         // All that is left to do is update the RawPacket state.
-        this.buffer = newBuffer;
+        setBuffer(newBuffer);
         this.offset = newOffset;
         this.length = newHeaderLength + payloadLength;
 
@@ -1389,7 +1410,7 @@ public class RawPacket
 
             System.arraycopy(buffer, offset, newBuffer, 0, length);
             offset = 0;
-            buffer = newBuffer;
+            setBuffer(newBuffer);
         }
     }
 
@@ -1598,7 +1619,7 @@ public class RawPacket
         newBuffer[offset] = (byte)((newBuffer[offset] & 0xF0)
                                     | newCsrcCount);
 
-        this.buffer = newBuffer;
+        setBuffer(newBuffer);
         this.length = payloadOffsetForNewBuff + length
                 - payloadOffsetForOldBuff - offset;
     }
