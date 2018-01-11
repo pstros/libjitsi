@@ -33,8 +33,8 @@ import org.jitsi.impl.neomedia.codec.*;
 import org.jitsi.impl.neomedia.device.*;
 import org.jitsi.impl.neomedia.format.*;
 import org.jitsi.impl.neomedia.protocol.*;
-import org.jitsi.impl.neomedia.rtcp.*;
 import org.jitsi.impl.neomedia.rtp.*;
+import org.jitsi.impl.neomedia.rtp.remotebitrateestimator.*;
 import org.jitsi.impl.neomedia.rtp.translator.*;
 import org.jitsi.impl.neomedia.stats.*;
 import org.jitsi.impl.neomedia.transform.*;
@@ -49,7 +49,6 @@ import org.jitsi.service.neomedia.codec.*;
 import org.jitsi.service.neomedia.control.*;
 import org.jitsi.service.neomedia.device.*;
 import org.jitsi.service.neomedia.format.*;
-import org.jitsi.service.neomedia.rtp.*;
 import org.jitsi.util.*;
 
 /**
@@ -343,7 +342,7 @@ public class MediaStreamImpl
      * The ID of the frame markings RTP header extension. We use this field as
      * a cache, in order to not access {@link #activeRTPExtensions} every time.
      */
-    private byte frameMarkingsExtensionId = -1;
+    private int frameMarkingsExtensionId = -1;
 
     /**
      * The {@link TransportCCEngine} instance, if any, for this
@@ -400,7 +399,6 @@ public class MediaStreamImpl
             setDevice(device);
         }
 
-        // TODO Add option to disable ZRTP, e.g. by implementing a NullControl.
         // If you change the default behavior (initiates a ZrtpControlImpl if
         // the srtpControl attribute is null), please accordingly modify the
         // CallPeerMediaHandler.initStream function.
@@ -644,6 +642,44 @@ public class MediaStreamImpl
     }
 
     /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void clearRTPExtensions()
+    {
+        synchronized (activeRTPExtensions)
+        {
+            activeRTPExtensions.clear();
+
+            frameMarkingsExtensionId = -1;
+
+            if (transportCCEngine != null)
+            {
+                transportCCEngine.setExtensionID(-1);
+            }
+
+            if (ohbEngine != null)
+            {
+                ohbEngine.setExtensionID(-1);
+            }
+
+            RemoteBitrateEstimatorWrapper remoteBitrateEstimatorWrapper
+                = getRemoteBitrateEstimator();
+
+            if (remoteBitrateEstimatorWrapper != null)
+            {
+                remoteBitrateEstimatorWrapper.setAstExtensionID(-1);
+                remoteBitrateEstimatorWrapper.setTccExtensionID(-1);
+            }
+
+            if (absSendTimeEngine != null)
+            {
+                absSendTimeEngine.setExtensionID(-1);
+            }
+        }
+    }
+
+    /**
      * Enables all RTP extensions configured for this {@link MediaStream}.
      */
     private void enableRTPExtensions()
@@ -668,7 +704,7 @@ public class MediaStreamImpl
         boolean active
             = !MediaDirection.INACTIVE.equals(rtpExtension.getDirection());
 
-        byte effectiveId = active ? extensionID : -1;
+        int effectiveId = active ? RTPUtils.as16Bits(extensionID) : -1;
 
         String uri = rtpExtension.getURI().toString();
         if (RTPExtension.ABS_SEND_TIME_URN.equals(uri))
@@ -676,6 +712,15 @@ public class MediaStreamImpl
             if (absSendTimeEngine != null)
             {
                 absSendTimeEngine.setExtensionID(effectiveId);
+            }
+
+            RemoteBitrateEstimatorWrapper remoteBitrateEstimatorWrapper
+                = getRemoteBitrateEstimator();
+
+            if (remoteBitrateEstimatorWrapper != null)
+            {
+                remoteBitrateEstimatorWrapper
+                    .setAstExtensionID(effectiveId);
             }
         }
         else if (RTPExtension.FRAME_MARKING_URN.equals(uri))
@@ -689,6 +734,13 @@ public class MediaStreamImpl
         else if (RTPExtension.TRANSPORT_CC_URN.equals(uri))
         {
             transportCCEngine.setExtensionID(effectiveId);
+            RemoteBitrateEstimatorWrapper remoteBitrateEstimatorWrapper
+                = getRemoteBitrateEstimator();
+
+            if (remoteBitrateEstimatorWrapper != null)
+            {
+                remoteBitrateEstimatorWrapper.setTccExtensionID(effectiveId);
+            }
         }
     }
 
@@ -1027,18 +1079,22 @@ public class MediaStreamImpl
 
         // CSRCs and CSRC audio levels
         if (csrcEngine == null)
+        {
             csrcEngine = new CsrcTransformEngine(this);
+        }
         engineChain.add(csrcEngine);
 
         // DTMF
         DtmfTransformEngine dtmfEngine = createDtmfTransformEngine();
         if (dtmfEngine != null)
+        {
             engineChain.add(dtmfEngine);
+        }
 
         engineChain.add(externalTransformerWrapper);
 
         // RRs and REMBs.
-        RTCPReceiverFeedbackTermination rtcpFeedbackTermination = getRTCPTermination();
+        TransformEngine rtcpFeedbackTermination = getRTCPTermination();
         if (rtcpFeedbackTermination != null)
         {
             engineChain.add(rtcpFeedbackTermination);
@@ -1082,7 +1138,6 @@ public class MediaStreamImpl
 
         MediaStreamTrackReceiver mediaStreamTrackReceiver
             = getMediaStreamTrackReceiver();
-
         if (mediaStreamTrackReceiver != null)
         {
             engineChain.add(mediaStreamTrackReceiver);
@@ -1104,7 +1159,7 @@ public class MediaStreamImpl
 
         // TODO RTCP termination should end up here.
 
-        RemoteBitrateEstimator
+        RemoteBitrateEstimatorWrapper
             remoteBitrateEstimator = getRemoteBitrateEstimator();
         if (remoteBitrateEstimator != null)
         {
@@ -1132,7 +1187,11 @@ public class MediaStreamImpl
         engineChain.add(ohbEngine);
 
         // SRTP
-        engineChain.add(srtpControl.getTransformEngine());
+        TransformEngine srtpTransformEngine = srtpControl.getTransformEngine();
+        if (srtpTransformEngine != null)
+        {
+            engineChain.add(srtpControl.getTransformEngine());
+        }
 
         // SSRC audio levels
         /*
@@ -1141,7 +1200,9 @@ public class MediaStreamImpl
          */
         SsrcTransformEngine ssrcEngine = createSsrcTransformEngine();
         if (ssrcEngine != null)
+        {
             engineChain.add(ssrcEngine);
+        }
 
         // RTP extensions may be implemented in some of the engines just
         // created (e.g. abs-send-time, ohb, transport-cc). So take into
@@ -1772,7 +1833,10 @@ public class MediaStreamImpl
             Collection<ReceiveStream> rtpManagerReceiveStreams
                 = rtpManager.getReceiveStreams();
 
-            receiveStreams.addAll(rtpManagerReceiveStreams);
+            if (rtpManagerReceiveStreams != null)
+            {
+                receiveStreams.addAll(rtpManagerReceiveStreams);
+            }
         }
 
         return receiveStreams;
@@ -3642,18 +3706,30 @@ public class MediaStreamImpl
      * Utility method that determines the temporal layer index (TID) of an RTP
      * packet.
      *
-     * @param buf the buffer that holds the RTP payload.
-     * @param off the offset in the buff where the RTP payload is found.
-     * @param len then length of the RTP payload in the buffer.
+     * @param pkt the packet from which to get the temporal layer id
      *
      * @return the TID of the packet, -1 otherwise.
      *
      * FIXME(gp) conceptually this belongs to the {@link VideoMediaStreamImpl},
      * but I don't want to be obliged to cast to use this method.
      */
-    public int getTemporalID(byte[] buf, int off, int len)
+    public int getTemporalID(RawPacket pkt)
     {
-        REDBlock redBlock = getPayloadBlock(buf, off, len);
+        if (frameMarkingsExtensionId != -1)
+        {
+            RawPacket.HeaderExtension fmhe
+                = pkt.getHeaderExtension((byte) frameMarkingsExtensionId);
+
+            if (fmhe != null)
+            {
+                return FrameMarkingHeaderExtension.getTemporalID(fmhe);
+            }
+            // Note that we go on and try to use the payload itself. We may want
+            // to change this behaviour in the future, because it will give
+            // wrong results if the payload is encrypted.
+        }
+
+        REDBlock redBlock = getPrimaryREDBlock(pkt);
         if (redBlock == null || redBlock.getLength() == 0)
         {
             return -1;
@@ -3682,7 +3758,8 @@ public class MediaStreamImpl
         }
         else
         {
-            logger.warn("Method not implemented");
+            // XXX not implementing temporal layer detection should not break
+            // things.
             return -1;
         }
     }
@@ -3691,18 +3768,30 @@ public class MediaStreamImpl
      * Utility method that determines the spatial layer index (SID) of an RTP
      * packet.
      *
-     * @param buf the buffer that holds the RTP payload.
-     * @param off the offset in the buff where the RTP payload is found.
-     * @param len then length of the RTP payload in the buffer.
+     * @param pkt the RTP packet.
      *
      * @return the SID of the packet, -1 otherwise.
      *
      * FIXME(gp) conceptually this belongs to the {@link VideoMediaStreamImpl},
      * but I don't want to be obliged to cast to use this method.
      */
-    public int getSpatialID(byte[] buf, int off, int len)
+    public int getSpatialID(RawPacket pkt)
     {
-        REDBlock redBlock = getPayloadBlock(buf, off, len);
+        if (frameMarkingsExtensionId != -1)
+        {
+            String encoding = getFormat(pkt.getPayloadType()).getEncoding();
+            RawPacket.HeaderExtension fmhe
+                = pkt.getHeaderExtension((byte) frameMarkingsExtensionId);
+            if (fmhe != null)
+            {
+                return FrameMarkingHeaderExtension.getSpatialID(fmhe, encoding);
+            }
+            // Note that we go on and try to use the payload itself. We may want
+            // to change this behaviour in the future, because it will give
+            // wrong results if the payload is encrypted.
+        }
+
+        REDBlock redBlock = getPrimaryREDBlock(pkt);
         if (redBlock == null || redBlock.getLength() == 0)
         {
             return -1;
@@ -3721,8 +3810,43 @@ public class MediaStreamImpl
         }
         else
         {
-            logger.warn("Method not implemented");
+            // XXX not implementing temporal layer detection should not break
+            // things.
             return -1;
+        }
+    }
+
+    /**
+     * Returns a boolean that indicates whether or not our we're able to detect
+     * the frame boundaries for the codec of the packet that is specified as an
+     * argument.
+     *
+     * @param pkt the {@link RawPacket} that holds the RTP packet.
+     *
+     * @return true if we're able to detect the frame boundaries for the codec
+     * of the packet that is specified as an argument, false otherwise.
+     */
+    public boolean supportsFrameBoundaries(RawPacket pkt)
+    {
+        if (frameMarkingsExtensionId == -1)
+        {
+            REDBlock redBlock = getPrimaryREDBlock(pkt);
+            if (redBlock != null && redBlock.getLength() != 0)
+            {
+                final byte vp9PT = getDynamicRTPPayloadType(Constants.VP9),
+                    vp8PT = getDynamicRTPPayloadType(Constants.VP8),
+                    pt = redBlock.getPayloadType();
+
+                return vp9PT == pt || vp8PT == pt;
+            }
+            else
+            {
+                return false;
+            }
+        }
+        else
+        {
+            return pkt.getHeaderExtension((byte) frameMarkingsExtensionId) != null;
         }
     }
 
@@ -3745,30 +3869,20 @@ public class MediaStreamImpl
             return false;
         }
 
-        byte[] buf = pkt.getBuffer();
-        int off = pkt.getOffset();
-        int len = pkt.getLength();
-        
         if (frameMarkingsExtensionId != -1)
         {
             RawPacket.HeaderExtension fmhe
-                = pkt.getHeaderExtension(frameMarkingsExtensionId);
+                = pkt.getHeaderExtension((byte) frameMarkingsExtensionId);
             if (fmhe != null)
             {
                 return FrameMarkingHeaderExtension.isStartOfFrame(fmhe);
-            }
-
-            if (logger.isDebugEnabled())
-            {
-                logger.debug("Packet with no frame marking, while frame marking"
-                             + " is enabled.");
             }
             // Note that we go on and try to use the payload itself. We may want
             // to change this behaviour in the future, because it will give
             // wrong results if the payload is encrypted.
         }
-        
-        REDBlock redBlock = getPayloadBlock(buf, off, len);
+
+        REDBlock redBlock = getPrimaryREDBlock(pkt);
         if (redBlock == null || redBlock.getLength() == 0)
         {
             return false;
@@ -3792,7 +3906,6 @@ public class MediaStreamImpl
         }
         else
         {
-            logger.warn("Method not implemented");
             return false;
         }
     }
@@ -3816,30 +3929,20 @@ public class MediaStreamImpl
             return false;
         }
 
-        byte[] buf = pkt.getBuffer();
-        int off = pkt.getOffset();
-        int len = pkt.getLength();
-        
         if (frameMarkingsExtensionId != -1)
         {
             RawPacket.HeaderExtension fmhe
-                = pkt.getHeaderExtension(frameMarkingsExtensionId);
+                = pkt.getHeaderExtension((byte) frameMarkingsExtensionId);
             if (fmhe != null)
             {
                 return FrameMarkingHeaderExtension.isEndOfFrame(fmhe);
-            }
-
-            if (logger.isDebugEnabled())
-            {
-                logger.debug("Packet with no frame marking, while frame marking"
-                             + " is enabled.");
             }
             // Note that we go on and try to use the payload itself. We may want
             // to change this behaviour in the future, because it will give
             // wrong results if the payload is encrypted.
         }
-        
-        REDBlock redBlock = getPayloadBlock(buf, off, len);
+
+        REDBlock redBlock = getPrimaryREDBlock(pkt);
         if (redBlock == null || redBlock.getLength() == 0)
         {
             return false;
@@ -3855,7 +3958,7 @@ public class MediaStreamImpl
         }
         else
         {
-            return RawPacket.isPacketMarked(buf, off, len);
+            return RawPacket.isPacketMarked(pkt);
         }
     }
 
@@ -3880,30 +3983,20 @@ public class MediaStreamImpl
             return false;
         }
 
-        byte[] buf = pkt.getBuffer();
-        int off = pkt.getOffset();
-        int len = pkt.getLength();
-
         if (frameMarkingsExtensionId != -1)
         {
             RawPacket.HeaderExtension fmhe
-                = pkt.getHeaderExtension(frameMarkingsExtensionId);
+                = pkt.getHeaderExtension((byte) frameMarkingsExtensionId);
             if (fmhe != null)
             {
                 return FrameMarkingHeaderExtension.isKeyframe(fmhe);
-            }
-
-            if (logger.isDebugEnabled())
-            {
-                logger.debug("Packet with no frame marking, while frame marking"
-                             + " is enabled.");
             }
             // Note that we go on and try to use the payload itself. We may want
             // to change this behaviour in the future, because it will give
             // wrong results if the payload is encrypted.
         }
 
-        REDBlock redBlock = getPayloadBlock(buf, off, len);
+        REDBlock redBlock = getPrimaryREDBlock(pkt);
         if (redBlock == null || redBlock.getLength() == 0)
         {
             return false;
@@ -3915,7 +4008,9 @@ public class MediaStreamImpl
         if (redBlock.getPayloadType() == vp8PT)
         {
             return org.jitsi.impl.neomedia.codec.video.vp8.DePacketizer
-                .isKeyFrame(buf, redBlock.getOffset(), redBlock.getLength());
+                .isKeyFrame(redBlock.getBuffer(),
+                            redBlock.getOffset(),
+                            redBlock.getLength());
         }
         else if (redBlock.getPayloadType() == h264PT)
         {
@@ -3965,38 +4060,48 @@ public class MediaStreamImpl
     }
 
     /**
+     * {@inheritDoc}
+     */
+    @Override
+    public REDBlock getPrimaryREDBlock(ByteArrayBuffer baf)
+    {
+        return getPrimaryREDBlock(new RawPacket(
+            baf.getBuffer(), baf.getOffset(), baf.getLength()));
+    }
+
+    /**
      * Gets the {@link REDBlock} that contains the payload of the packet passed
      * in as a parameter.
      *
-     * @param buf the buffer that holds the RTP payload.
-     * @param off the offset in the buff where the RTP payload is found.
-     * @param len then length of the RTP payload in the buffer.
+     * @param pkt the packet from which we want to get the primary RED block
      * @return the {@link REDBlock} that contains the payload of the packet
      * passed in as a parameter, or null if the buffer is invalid.
      */
-    public REDBlock getPayloadBlock(byte[] buf, int off, int len)
+    @Override
+    public REDBlock getPrimaryREDBlock(RawPacket pkt)
     {
-        if (buf == null || buf.length < off + len
-            || len < RawPacket.FIXED_HEADER_SIZE)
+        if (pkt == null || pkt.getLength() < RawPacket.FIXED_HEADER_SIZE)
         {
             return null;
         }
 
         final byte redPT = getDynamicRTPPayloadType(Constants.RED),
-            pktPT = (byte) RawPacket.getPayloadType(buf, off, len);
+            pktPT = pkt.getPayloadType();
 
         if (redPT == pktPT)
         {
-            return REDBlockIterator.getPrimaryBlock(buf, off, len);
+
+            return REDBlockIterator.getPrimaryBlock(
+                pkt.getBuffer(), pkt.getOffset(), pkt.getLength());
         }
         else
         {
-            final int payloadOff = RawPacket.getPayloadOffset(buf, off, len),
-                payloadLen = RawPacket.getPayloadLength(buf, off, len, true);
-
-            return new REDBlock(buf, payloadOff, payloadLen, pktPT);
+            return new REDBlock(
+                pkt.getBuffer(), pkt.getPayloadOffset(),
+                pkt.getPayloadLength(), pktPT);
         }
     }
+
 
     /**
      * Gets the {@code RtxTransformer}, if any, used by the {@code MediaStream}.
@@ -4021,7 +4126,7 @@ public class MediaStreamImpl
     /**
      * Gets the RTCP termination for this {@link MediaStreamImpl}.
      */
-    protected RTCPReceiverFeedbackTermination getRTCPTermination()
+    protected TransformEngine getRTCPTermination()
     {
         return null;
     }
@@ -4041,7 +4146,7 @@ public class MediaStreamImpl
      * @return the <tt>RemoteBitrateEstimator</tt> of this
      * <tt>VideoMediaStream</tt> if any; otherwise, <tt>null</tt>
      */
-    public RemoteBitrateEstimator getRemoteBitrateEstimator()
+    public RemoteBitrateEstimatorWrapper getRemoteBitrateEstimator()
     {
         return null;
     }

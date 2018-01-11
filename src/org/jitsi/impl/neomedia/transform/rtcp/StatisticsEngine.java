@@ -23,12 +23,10 @@ import javax.media.rtp.*;
 
 import net.sf.fmj.media.rtp.*;
 import net.sf.fmj.media.rtp.util.*;
-import net.sf.fmj.utility.*;
 
 import org.jitsi.impl.neomedia.*;
 import org.jitsi.impl.neomedia.device.*;
 import org.jitsi.impl.neomedia.rtcp.*;
-import org.jitsi.impl.neomedia.rtp.translator.*;
 import org.jitsi.impl.neomedia.stats.*;
 import org.jitsi.impl.neomedia.transform.*;
 import org.jitsi.service.neomedia.*;
@@ -229,7 +227,7 @@ public class StatisticsEngine
                             i < sc;
                             ++i, ssrcOff += 4)
                     {
-                        if (RTPTranslatorImpl.readInt(buf, ssrcOff)
+                        if (RTPUtils.readInt(buf, ssrcOff)
                                 == extendedReport.getSSRC())
                         {
                             before = true;
@@ -354,7 +352,7 @@ public class StatisticsEngine
                         break;
                     }
 
-                    int senderSSRC = RTPTranslatorImpl.readInt(buf, off + 4);
+                    int senderSSRC = RTPUtils.readInt(buf, off + 4);
                     // Collect the SSRCs of the RTP data packet sources being
                     // reported upon by the RTCP RR/SR packet because they may
                     // be of concern to the RTCP XR packet (e.g. VoIP Metrics
@@ -364,9 +362,7 @@ public class StatisticsEngine
                     for (int i = 0; i < rc; i++)
                     {
                         sourceSSRCs[i]
-                            = RTPTranslatorImpl.readInt(
-                                    buf,
-                                    receptionReportBlockOff);
+                            = RTPUtils.readInt(buf, receptionReportBlockOff);
                         receptionReportBlockOff += 6 * 4;
                     }
 
@@ -1022,7 +1018,11 @@ public class StatisticsEngine
                 }
                 else if (rtcp instanceof RTCPTCCPacket)
                 {
-                    // TODO: handle for the purpose of BWE.
+                    /**
+                     * Intuition: Packet is RTCP, wakeup RTCPPacketListeners which may
+                     * include BWE workers
+                     */
+                    streamStats.tccPacketReceived((RTCPTCCPacket)rtcp);
                 }
                 break;
 

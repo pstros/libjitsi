@@ -303,7 +303,7 @@ public class MediaStreamTrackDesc
             RTPEncodingDesc encoding = frameDesc.getRTPEncoding();
 
             FrameDesc lastReceivedFrame = encoding.getLastReceivedFrame();
-            if (lastReceivedFrame != null && TimeUtils.rtpDiff(
+            if (lastReceivedFrame != null && RTPUtils.rtpTimestampDiff(
                 frameDesc.getTimestamp(), lastReceivedFrame.getTimestamp()) < 0)
             {
                 // This is a late key frame header packet that we've missed.
@@ -350,25 +350,22 @@ public class MediaStreamTrackDesc
 
     /**
      * Finds the {@link RTPEncodingDesc} that corresponds to the packet that is
-     * specified in the buffer passed in as an argument.
+     * passed in as an argument. Assumes that the packet is valid.
      *
-     * @param buf the byte array that holds the RTP packet.
-     * @param off the offset in the byte array where the actual data starts
-     * @param len the length of the actual data
+     * @param pkt the packet to match.
      * @return the {@link RTPEncodingDesc} that corresponds to the packet that is
      * specified in the buffer passed in as an argument, or null.
      */
-    RTPEncodingDesc findRTPEncodingDesc(byte[] buf, int off, int len)
+    RTPEncodingDesc findRTPEncodingDesc(RawPacket pkt)
     {
-        if (buf == null || buf.length < off + len
-            || ArrayUtils.isNullOrEmpty(rtpEncodings))
+        if (ArrayUtils.isNullOrEmpty(rtpEncodings))
         {
             return null;
         }
 
         for (RTPEncodingDesc encoding : rtpEncodings)
         {
-            if (encoding.matches(buf, off, len))
+            if (encoding.matches(pkt))
             {
                 return encoding;
             }
@@ -413,16 +410,32 @@ public class MediaStreamTrackDesc
      * @param len the length of the actual data
      * @return the {@link FrameDesc} that corresponds to the packet that is
      * specified in the buffer passed in as an argument, or null.
+     * @Deprecated use findFrameDesc(long, long)
      */
+    @Deprecated
     public FrameDesc findFrameDesc(byte[] buf, int off, int len)
     {
-        RTPEncodingDesc rtpEncoding = findRTPEncodingDesc(buf, off, len);
-        if (rtpEncoding == null)
-        {
-            return null;
-        }
+        return findFrameDesc(
+            RawPacket.getSSRCAsLong(buf, off, len),
+            RawPacket.getTimestamp(buf, off, len));
+    }
 
-        return rtpEncoding.findFrameDesc(buf, off, len);
+    /**
+     * Finds the {@link FrameDesc} that corresponds to the given timestamp
+     * for the given stream (identified by its ssrc)
+     * @param ssrc the ssrc of the stream to which this frame belongs
+     * @param timestamp the timestamp of the frame the caller is trying to find
+     * @return the {@link FrameDesc} that corresponds to the ssrc and timestamp
+     * given, or null
+     */
+    public FrameDesc findFrameDesc(long ssrc, long timestamp)
+    {
+        RTPEncodingDesc rtpEncoding = findRTPEncodingDesc(ssrc);
+        if (rtpEncoding != null)
+        {
+            return rtpEncoding.findFrameDesc(timestamp);
+        }
+        return null;
     }
 
     /**
@@ -433,33 +446,6 @@ public class MediaStreamTrackDesc
     public boolean matches(long ssrc)
     {
         return rtpEncodings[0].getPrimarySSRC() == ssrc;
-    }
-
-    /**
-     * Gets the maximum subjective quality index that complies to the max height
-     * specified as an argument.
-     *
-     * @param maxHeight the max height
-     * @return the maximum subjective quality index that complies to the max
-     * height specified as an argument, or -1 if no encoding meets the maxHeight
-     * that is specified as an argument..
-     */
-    public int getMaxIndex(int maxHeight)
-    {
-        int optimalIndex = -1;
-
-        if (!ArrayUtils.isNullOrEmpty(rtpEncodings))
-        {
-            for (int i = 0; i < rtpEncodings.length; i++)
-            {
-                if (rtpEncodings[i].getHeight() <= maxHeight)
-                {
-                    optimalIndex = i;
-                }
-            }
-        }
-
-        return optimalIndex;
     }
 
     /**

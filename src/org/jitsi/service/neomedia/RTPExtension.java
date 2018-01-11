@@ -73,6 +73,19 @@ public class RTPExtension
         = "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01";
 
     /**
+     * The URN which identifies the rtp-stream-id extensions
+     * in {@link "https://tools.ietf.org/html/draft-ietf-mmusic-rid-10"}.
+     */
+    public static final String RTP_STREAM_ID_URN
+        = "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id";
+
+    /**
+     * The URN which identifies the transmission time-offset extensions
+     * in {@link "https://tools.ietf.org/html/rfc5450"}.
+     */
+    public static final String TOF_URN = "urn:ietf:params:rtp-hdrext:toffset";
+
+    /**
      * The direction that this extension will be transmitted in.
      */
     private MediaDirection direction = MediaDirection.SENDRECV;

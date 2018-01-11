@@ -15,6 +15,8 @@
  */
 package org.jitsi.impl.neomedia.rtp.remotebitrateestimator;
 
+import org.jitsi.util.*;
+
 import java.util.*;
 
 /**
@@ -25,6 +27,14 @@ import java.util.*;
  */
 class OveruseEstimator
 {
+    /**
+     * The <tt>Logger</tt> used by the
+     * <tt>RemoteBitrateEstimatorAbsSendTime</tt> class and its instances for
+     * logging output.
+     */
+    private static final Logger logger
+        = Logger.getLogger(OveruseEstimator.class);
+
     private static final int kDeltaCounterMax = 1000;
 
     private static final int kMinFramePeriodHistoryLength = 60;
@@ -94,7 +104,7 @@ class OveruseEstimator
     private final double[] tsDeltaHist = new double[kMinFramePeriodHistoryLength];
 
     /**
-     * Index to insert next value into {@link tsDeltaHist}
+     * Index to insert next value into {@link #tsDeltaHist}
      */
     private int tsDeltaHistInsIdx;
 
@@ -162,11 +172,10 @@ class OveruseEstimator
             long tDelta,
             double tsDelta,
             int sizeDelta,
-            BandwidthUsage currentHypothesis)
+            BandwidthUsage currentHypothesis, long systemTimeMs)
     {
         double minFramePeriod = updateMinFramePeriod(tsDelta);
         double tTsDelta = tDelta - tsDelta;
-        double fsDelta = sizeDelta;
 
         ++numOfDeltas;
         if (numOfDeltas > kDeltaCounterMax)
@@ -187,7 +196,7 @@ class OveruseEstimator
         double[] h = this.h;
         double[] Eh = this.Eh;
 
-        h[0] = fsDelta;
+        h[0] = sizeDelta;
         h[1] = 1D;
         Eh[0] = E[0][0] * h[0] + E[0][1] * h[1];
         Eh[1] = E[1][0] * h[0] + E[1][1] * h[1];
@@ -240,6 +249,18 @@ class OveruseEstimator
         slope = slope + K[0] * residual;
         prevOffset = offset;
         offset = offset + K[1] * residual;
+
+        if (logger.isTraceEnabled())
+        {
+            logger.trace("new_jitter_estimate" +
+                "," + hashCode() +
+                "," + systemTimeMs +
+                "," + tDelta +
+                "," + tsDelta +
+                "," + tTsDelta +
+                "," + offset +
+                "," + currentHypothesis.getValue());
+        }
     }
 
     private double updateMinFramePeriod(double tsDelta)

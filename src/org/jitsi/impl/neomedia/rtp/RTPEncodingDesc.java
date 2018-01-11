@@ -249,87 +249,128 @@ public class RTPEncodingDesc
     }
 
     /**
-     * Applies frame boundaries heuristics to frames a and b, assuming a
-     * predates/is older than b.
+     * Applies frame boundaries heuristics to frames olderFrame and
+     * newerFrame, assuming olderFrame predates/is older than newerFrame.
+     * Depending on the relationship of olderFrame and newerFrame, and what
+     * we know about olderFrame and newerFrame, we may be able to deduce
+     * the last expected sequence number for olderFrame and/or the first
+     * expected sequence number of newerFrame.
      *
-     * @param a the old {@link FrameDesc}.
-     * @param b the new {@link FrameDesc}
+     * @param olderFrame the {@link FrameDesc} that comes before newerFrame.
+     * @param newerFrame the {@link FrameDesc} that comes after olderFrame.
      */
-    private static void applyFrameBoundsHeuristics(FrameDesc a, FrameDesc b)
+    private static void applyFrameBoundsHeuristics(
+            FrameDesc olderFrame,
+            FrameDesc newerFrame)
     {
-        int aLastSeqNum = a.getEnd(), bFirstSeqNum = b.getStart();
-        if (aLastSeqNum != -1 && bFirstSeqNum != -1)
+        if (olderFrame.lastSequenceNumberKnown() && newerFrame.lastSequenceNumberKnown())
         {
-            // No need for heuristics.
+            // We already know the last sequence number of olderFrame and the first
+            // sequence number of newerFrame, no need for further heuristics.
             return;
         }
-
-        long tsDiff = (b.getTimestamp() - a.getTimestamp()) & 0xFFFFFFFFL;
-        if (tsDiff > (1L << 30) && tsDiff < (-(1L << 30) & 0xFFFFFFFFL))
+        if (!TimestampUtils.isNewerTimestamp(
+                newerFrame.getTimestamp(), olderFrame.getTimestamp()))
         {
-            // the distance (mod 2^32) between the two timestamps needs to be
-            // less than half the timestamp space.
+            // newerFrame isn't newer than olderFrame, bail
             return;
         }
-        else if (tsDiff >= (-(1L << 30) & 0xFFFFFFFFL))
-        {
-            logger.warn("Frames that are out of order detected.");
-        }
-        else
-        {
-            int bMinSeqNum = b.getMinSeen(), aMaxSeqNum = a.getMaxSeen();
-            int snDiff = (bMinSeqNum - aMaxSeqNum) & 0xFFFF;
+        int lowestSeenSeqNumOfNewerFrame = newerFrame.getMinSeen();
+        int highestSeenSeqNumOfOlderFrame = olderFrame.getMaxSeen();
+        int seqNumDiff =
+                RTPUtils.getSequenceNumberDelta(lowestSeenSeqNumOfNewerFrame, highestSeenSeqNumOfOlderFrame);
 
-            if (bFirstSeqNum != -1 || aLastSeqNum != -1)
+        boolean guessed = false;
+
+        // For a stream that supports frame marking, we will conclusively know the start and end packets of a frame
+        // via the marking.  If those packets have been received, the start/end of the frame will already be
+        // conclusively known at this point.  Because of this, we can still make a guess even when the sequence
+        // number gap is bigger (see further comments for each scenario below)
+        boolean framesSupportFrameBoundaries =
+            olderFrame.supportsFrameBoundaries() && newerFrame.supportsFrameBoundaries();
+
+        if (framesSupportFrameBoundaries)
+        {
+            if (olderFrame.lastSequenceNumberKnown() || newerFrame.firstSequenceNumberKnown())
             {
-                if (snDiff == 2)
+
+                // XXX(bgrozev): for VPX codecs with PictureID we could find
+                // the start/end even with diff>2 (if PictureIDDiff == 1)
+
+                // XXX(gp): we don't have the picture ID in FrameDesc and I
+                // feel it doesn't belong there. We may need to subclass it
+                // into VPXFrameDesc and H264FrameDesc and move the
+                // heuristics logic in there.
+                if (seqNumDiff == 2)
                 {
-                    if (aLastSeqNum == -1)
+                    if (!olderFrame.lastSequenceNumberKnown())
                     {
-                        aLastSeqNum = (aMaxSeqNum + 1) & 0xFFFF;
-                        if (logger.isDebugEnabled())
-                        {
-                            logger.debug("Guessed frame end=" + aLastSeqNum);
-                        }
-                        a.setEnd(aLastSeqNum);
+                        // If we haven't yet seen the last sequence number of this frame, we know it must be
+                        // the packet in the 'gap' here (since, had the biggest one we've seen for that frame so
+                        // far been the last one, it would've been marked)
+                        olderFrame.setEnd(RTPUtils.as16Bits(highestSeenSeqNumOfOlderFrame + 1));
                     }
                     else
                     {
-                        bFirstSeqNum = (bMinSeqNum - 1) & 0xFFFF;
-                        if (logger.isDebugEnabled())
-                        {
-                            logger.debug("Guessed frame start=" + bFirstSeqNum);
-                        }
-                        b.setStart(bFirstSeqNum);
+                        newerFrame.setStart(RTPUtils.as16Bits(lowestSeenSeqNumOfNewerFrame - 1));
                     }
-                }
-                else if (snDiff < 2 || snDiff > (-3 & 0xFFFF))
-                {
-                    logger.warn("Frame corruption or packets that are out of " +
-                        "order detected.");
+                    guessed = true;
                 }
             }
             else
             {
-                if (snDiff == 3)
+                // Neither the last packet of the older frame nor the first packet of the newer frame
+                // has been seen, so we know the start/end packets must be held within this gap
+                if (seqNumDiff == 3)
                 {
-                    bFirstSeqNum = (bMinSeqNum - 1) & 0xFFFF;
-                    aLastSeqNum = (aMaxSeqNum + 1) & 0xFFFF;
-                    if (logger.isDebugEnabled())
+                    olderFrame.setEnd(RTPUtils.as16Bits(highestSeenSeqNumOfOlderFrame + 1));
+                    newerFrame.setStart(RTPUtils.as16Bits(lowestSeenSeqNumOfNewerFrame - 1));
+                    guessed = true;
+                }
+            }
+        }
+        else
+        {
+            if (olderFrame.lastSequenceNumberKnown() || newerFrame.firstSequenceNumberKnown())
+            {
+                if (seqNumDiff == 1)
+                {
+                    if (!olderFrame.lastSequenceNumberKnown())
                     {
-                        logger.debug(
-                            "Guessed frame start=" + bFirstSeqNum
-                                + ",end=" + aLastSeqNum);
+                        olderFrame.setEnd(RTPUtils.as16Bits(highestSeenSeqNumOfOlderFrame));
+                    }
+                    else
+                    {
+                        newerFrame.setStart(RTPUtils.as16Bits(lowestSeenSeqNumOfNewerFrame));
                     }
 
-                    a.setEnd(aLastSeqNum);
-                    b.setStart(bFirstSeqNum);
+                    guessed = true;
                 }
-                else if (snDiff < 3 || snDiff > (-4 & 0xFFFF))
-                {
-                    logger.warn("Frame corruption or packets that are out of" +
-                        " order detected.");
-                }
+            }
+            else
+            {
+                // XXX(bgrozev): Can't do much here. If diff==2 and
+                // we don't know either the first sequence number of the newer frame or
+                // the last sequence number of the older frame, then there is
+                // 1 packet between olderFrameLastSeen and newerFrameFirstSeen. And we don't
+                // know whether this packet belongs to olderFrame or to newerFrame, or is olderFrame
+                // separate frame of its own (since in this if branch there
+                // is no support for frame boundaries, which means that e.g.
+                // olderFrameLastSeen could be the end of olderFrame even if lastSeqNumOfOlderFrame == -1).
+            }
+        }
+
+        if (guessed)
+        {
+            if (logger.isDebugEnabled())
+            {
+                logger.debug(
+                    "Guessed frame boundaries ts=" + olderFrame.getTimestamp()
+                        + ",start=" + olderFrame.getStart()
+                        + ",end=" + olderFrame.getEnd()
+                        + ",ts=" + newerFrame.getTimestamp()
+                        + ",start=" + newerFrame.getStart()
+                        + ",end=" + newerFrame.getEnd());
             }
         }
     }
@@ -482,17 +523,14 @@ public class RTPEncodingDesc
     }
 
     /**
-     * Gets a boolean indicating whether or not the packet specified in the
-     * arguments matches this encoding or not.
+     * Gets a boolean indicating whether or not the specified packet matches
+     * this encoding or not. Assumes that the packet is valid.
      *
-     * @param buf the <tt>byte</tt> array that contains the RTP packet data.
-     * @param off the offset in <tt>buf</tt> at which the actual data starts.
-     * @param len the number of <tt>byte</tt>s in <tt>buf</tt> which
-     * constitute the actual data.
+     * @param pkt the RTP packet.
      */
-    public boolean matches(byte[] buf, int off, int len)
+    boolean matches(RawPacket pkt)
     {
-        long ssrc = RawPacket.getSSRCAsLong(buf, off, len);
+        long ssrc = pkt.getSSRCAsLong();
 
         if (primarySSRC != ssrc && rtxSSRC != ssrc)
         {
@@ -504,10 +542,16 @@ public class RTPEncodingDesc
             return true;
         }
 
-        int tid = this.tid != -1 ? track.getMediaStreamTrackReceiver()
-            .getStream().getTemporalID(buf, off, len) : -1,
-            sid = this.sid != -1 ? track.getMediaStreamTrackReceiver()
-            .getStream().getSpatialID(buf, off, len) : -1;
+        int tid
+            = this.tid != -1
+                    ? track.getMediaStreamTrackReceiver()
+                            .getStream().getTemporalID(pkt)
+                    : -1;
+        int sid
+            = this.sid != -1
+                    ? track.getMediaStreamTrackReceiver()
+                            .getStream().getSpatialID(pkt)
+                    : -1;
 
         return (tid == -1 && sid == -1 && idx == 0)
             || (tid == this.tid && sid == this.sid);
@@ -540,8 +584,6 @@ public class RTPEncodingDesc
      *
      * @param pkt
      * @param nowMs
-     *
-     * @return the {@link FrameDesc} that was updated, otherwise null.
      */
     void update(RawPacket pkt, long nowMs)
     {
@@ -557,14 +599,16 @@ public class RTPEncodingDesc
             isPacketOfNewFrame = true;
             synchronized (base.streamFrames)
             {
-                base.streamFrames.put(ts, frame = new FrameDesc(this, ts, nowMs));
+                base.streamFrames.put(
+                    ts, frame = new FrameDesc(this, pkt, nowMs));
             }
 
             // We measure the stable bitrate on every new frame.
             lastStableBitrateBps = getBitrateBps(nowMs);
 
             if (lastReceivedFrame == null
-                || TimeUtils.rtpDiff(ts, lastReceivedFrame.getTimestamp()) > 0)
+                || RTPUtils.isNewerTimestampThan(
+                        ts, lastReceivedFrame.getTimestamp()))
             {
                 lastReceivedFrame = frame;
             }
@@ -666,12 +710,29 @@ public class RTPEncodingDesc
      * in the buffer passed in as a parameter, or null if there is no matching
      * {@link FrameDesc}.
      */
-    FrameDesc findFrameDesc(byte[] buf, int off, int len)
+//    FrameDesc findFrameDesc(byte[] buf, int off, int len)
+//    {
+//        long ts = RawPacket.getTimestamp(buf, off, len);
+//        synchronized (base.streamFrames)
+//        {
+//            return base.streamFrames.get(ts);
+//        }
+//    }
+
+    /**
+     * Finds the {@link FrameDesc} that matches the RTP packet specified
+     * in the buffer passed in as an argument.
+     *
+     * @param timestamp the timestamp of the desired {@link FrameDesc}
+     *
+     * @return the {@link FrameDesc} that matches the RTP timestamp given,
+     * or null if there is no matching frame {@link FrameDesc}.
+     */
+    FrameDesc findFrameDesc(long timestamp)
     {
-        long ts = RawPacket.getTimestamp(buf, off, len);
         synchronized (base.streamFrames)
         {
-            return base.streamFrames.get(ts);
+            return base.streamFrames.get(timestamp);
         }
     }
 

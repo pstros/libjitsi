@@ -16,6 +16,7 @@
 package org.jitsi.impl.neomedia.rtp.remotebitrateestimator;
 
 import org.jitsi.service.neomedia.rtp.*;
+import org.jitsi.util.*;
 
 /**
  * A rate control implementation based on additive increases of bitrate when no
@@ -30,6 +31,14 @@ import org.jitsi.service.neomedia.rtp.*;
  */
 class AimdRateControl
 {
+    /**
+     * The <tt>Logger</tt> used by the
+     * <tt>RemoteBitrateEstimatorAbsSendTime</tt> class and its instances for
+     * logging output.
+     */
+    private static final Logger logger
+        = Logger.getLogger(AimdRateControl.class);
+
     private static final int kDefaultRttMs = 200;
 
     private static final long kInitializationTimeMs = 5000;
@@ -141,7 +150,7 @@ class AimdRateControl
                     && incomingBitrateKbps
                         > avgMaxBitrateKbps + 3F * stdMaxBitRate)
             {
-                changeRegion(RateControlRegion.kRcMaxUnknown);
+                changeRegion(RateControlRegion.kRcMaxUnknown, nowMs);
                 avgMaxBitrateKbps = -1F;
             }
             if (rateControlRegion == RateControlRegion.kRcNearMax)
@@ -156,7 +165,7 @@ class AimdRateControl
 
                 currentBitrateBps += additiveIncreaseBps;
             }
-            else
+            else // kRcMaxUnknown || kRcAboveMax
             {
                 long multiplicativeIncreaseBps
                     = multiplicativeRateIncrease(
@@ -193,7 +202,7 @@ class AimdRateControl
                     currentBitrateBps
                         = Math.min(currentBitrateBps, this.currentBitrateBps);
                 }
-                changeRegion(RateControlRegion.kRcNearMax);
+                changeRegion(RateControlRegion.kRcNearMax, nowMs);
 
                 if (incomingBitrateKbps
                         < avgMaxBitrateKbps - 3F * stdMaxBitRate)
@@ -204,7 +213,7 @@ class AimdRateControl
                 updateMaxBitRateEstimate(incomingBitrateKbps);
             }
             // Stay on hold until the pipes are cleared.
-            changeState(RateControlState.kRcHold);
+            changeState(RateControlState.kRcHold, nowMs);
             timeLastBitrateChange = nowMs;
             break;
         }
@@ -223,9 +232,20 @@ class AimdRateControl
         return currentBitrateBps;
     }
 
-    private void changeRegion(RateControlRegion region)
+    private void changeRegion(RateControlRegion region, long nowMs)
     {
+        if (rateControlRegion == region)
+        {
+            return;
+        }
+
         rateControlRegion = region;
+
+        if (logger.isTraceEnabled())
+        {
+            logger.trace(
+                "region_changed," + hashCode() + "," + nowMs + "," + region);
+        }
     }
 
     private void changeState(RateControlInput input, long nowMs)
@@ -236,26 +256,37 @@ class AimdRateControl
             if (rateControlState == RateControlState.kRcHold)
             {
                 timeLastBitrateChange = nowMs;
-                changeState(RateControlState.kRcIncrease);
+                changeState(RateControlState.kRcIncrease, nowMs);
             }
             break;
         case kBwOverusing:
             if (rateControlState != RateControlState.kRcDecrease)
             {
-                changeState(RateControlState.kRcDecrease);
+                changeState(RateControlState.kRcDecrease, nowMs);
             }
             break;
         case kBwUnderusing:
-            changeState(RateControlState.kRcHold);
+            changeState(RateControlState.kRcHold, nowMs);
             break;
         default:
             throw new IllegalStateException("currentInput.bwState");
         }
     }
 
-    private void changeState(RateControlState newState)
+    private void changeState(RateControlState newState, long nowMs)
     {
+        if (rateControlState == newState)
+        {
+            return;
+        }
+
         rateControlState = newState;
+
+        if (logger.isTraceEnabled())
+        {
+            logger.trace("state_changed,"
+                + hashCode() + "," + nowMs + "," + rateControlState);
+        }
     }
 
     public long getFeedBackInterval()
@@ -356,14 +387,14 @@ class AimdRateControl
         inExperiment = false;
     }
 
-    public void setEstimate(int bitrateBps, long nowMs)
+    public void setEstimate(long bitrateBps, long nowMs)
     {
         updated = true;
         bitrateIsInitialized = true;
         currentBitrateBps = changeBitrate(bitrateBps, bitrateBps, nowMs);
     }
 
-    public void setMinBitrate(int minBitrateBps)
+    public void setMinBitrate(long minBitrateBps)
     {
         minConfiguredBitrateBps = minBitrateBps;
         currentBitrateBps = Math.max(minBitrateBps, currentBitrateBps);
@@ -371,6 +402,13 @@ class AimdRateControl
 
     public void setRtt(long rtt)
     {
+        if (logger.isTraceEnabled())
+        {
+            logger.trace("rtt_update," + hashCode()
+                + "," + System.currentTimeMillis()
+                + "," + rtt);
+        }
+
         this.rtt = rtt;
     }
 
@@ -417,6 +455,16 @@ class AimdRateControl
                     currentBitrateBps,
                     currentInput.incomingBitRate,
                     nowMs);
+
+        if (isValidEstimate() && logger.isTraceEnabled())
+        {
+            logger.trace("new_rate_estimate" +
+                "," + hashCode() +
+                "," + nowMs +
+                "," + currentBitrateBps +
+                "," + currentInput.incomingBitRate);
+        }
+
         if (nowMs - timeOfLastLog > kLogIntervalMs)
             timeOfLastLog = nowMs;
         return currentBitrateBps;

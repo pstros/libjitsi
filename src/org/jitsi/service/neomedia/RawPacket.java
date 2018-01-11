@@ -177,6 +177,23 @@ public class RawPacket
     /**
      * Test whether the RTP Marker bit is set
      *
+     * @param baf
+     *
+     * @return true if the RTP Marker bit is set, false otherwise.
+     */
+    public static boolean isPacketMarked(ByteArrayBuffer baf)
+    {
+        if (baf == null)
+        {
+            return false;
+        }
+
+        return isPacketMarked(baf.getBuffer(), baf.getOffset(), baf.getLength());
+    }
+
+    /**
+     * Test whether the RTP Marker bit is set
+     *
      * @param buffer
      * @param offset
      * @param length
@@ -685,7 +702,6 @@ public class RawPacket
     {
         return this.buffer;
     }
-
 
     /**
      * Returns the CSRC level at the specified index or <tt>defaultValue</tt>
