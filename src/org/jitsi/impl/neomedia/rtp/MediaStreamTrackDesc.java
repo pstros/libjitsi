@@ -219,6 +219,7 @@ public class MediaStreamTrackDesc
         if (!simulcast)
         {
             frameDesc.getRTPEncoding().setActive(true);
+            logger.info("***MSTD.update no simulcast, set active=true streamHash: " + getMediaStreamTrackReceiver().getStream().hashCode());
             return;
         }
 
@@ -285,13 +286,13 @@ public class MediaStreamTrackDesc
 
             if (maybeSuspended || activated)
             {
-                if (logger.isTraceEnabled())
-                {
+                //if (logger.isTraceEnabled())
+                //{
                     String reason = maybeSuspended ? "maybe_suspended" : "activated";
-                    logger.trace("send_fir,stream="
+                    logger.info("send_fir,stream="
                         + mediaStreamTrackReceiver.getStream().hashCode()
                         + ",reason=" + reason);
-                }
+                //}
                 // FIXME only when suspended encodings are received.
                 ((RTPTranslatorImpl) mediaStreamTrackReceiver.getStream()
                     .getRTPTranslator()).getRtcpFeedbackMessageSender()
@@ -310,12 +311,12 @@ public class MediaStreamTrackDesc
 
                 if (!encoding.isActive())
                 {
-                    if (logger.isTraceEnabled())
-                    {
-                        logger.trace("send_fir,stream="
+                    //if (logger.isTraceEnabled())
+                    //{
+                        logger.info("send_fir,stream="
                             + mediaStreamTrackReceiver.getStream().hashCode()
                             + ",reason=late");
-                    }
+                    //}
 
                     // FIXME only when encodings is received.
                     ((RTPTranslatorImpl) mediaStreamTrackReceiver.getStream()
@@ -340,6 +341,7 @@ public class MediaStreamTrackDesc
                     if (!isActive && rtpEncodings[i].requires(encoding.getIndex()))
                     {
                         isActive = true;
+                        logger.info("***MSTD.update set active=true streamHash: " + getMediaStreamTrackReceiver().getStream().hashCode());
                     }
 
                     rtpEncodings[i].setActive(isActive);
