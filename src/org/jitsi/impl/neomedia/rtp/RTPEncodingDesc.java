@@ -427,11 +427,11 @@ public class RTPEncodingDesc
      */
     public boolean isActive(boolean performTimeoutCheck)
     {
-        logger.info("***RTPEncodingDesc.isActive " + track.getMediaStreamTrackReceiver().getStream().hashCode() +
-            " active: " + active +
-            ", performTimeoutCheck" + performTimeoutCheck +
-            ", hasReceivedFrame: " + (lastReceivedFrame != null) +
-            ", numOfReceivers: " + numOfReceivers);
+//        logger.info("***RTPEncodingDesc.isActive " + track.getMediaStreamTrackReceiver().getStream().hashCode() +
+//            " active: " + active +
+//            ", performTimeoutCheck: " + performTimeoutCheck +
+//            ", hasReceivedFrame: " + (lastReceivedFrame != null) +
+//            ", numOfReceivers: " + numOfReceivers);
         if (active && performTimeoutCheck)
         {
             if (lastReceivedFrame == null)
@@ -443,9 +443,9 @@ public class RTPEncodingDesc
                 long timeSinceLastReceivedFrameMs = System.currentTimeMillis()
                     - lastReceivedFrame.getReceivedMs();
 
-                logger.info("***RTPEncodingDesc.isActive pt2 " + track.getMediaStreamTrackReceiver().getStream().hashCode() +
-                    " timeSinceLastReceivedFrameMs: " + timeSinceLastReceivedFrameMs +
-                    ", lessThanSuspendThreshold: " + (timeSinceLastReceivedFrameMs <= MediaStreamTrackDesc.SUSPENSION_THRESHOLD_MS));
+//                logger.info("***RTPEncodingDesc.isActive pt2 " + track.getMediaStreamTrackReceiver().getStream().hashCode() +
+//                    " timeSinceLastReceivedFrameMs: " + timeSinceLastReceivedFrameMs +
+//                    ", lessThanSuspendThreshold: " + (timeSinceLastReceivedFrameMs <= MediaStreamTrackDesc.SUSPENSION_THRESHOLD_MS));
 
                 return timeSinceLastReceivedFrameMs
                     <= MediaStreamTrackDesc.SUSPENSION_THRESHOLD_MS;
@@ -586,8 +586,8 @@ public class RTPEncodingDesc
      */
     void setActive(boolean active)
     {
-        logger.info("RtpEncodingDesc.setActive " + track.getMediaStreamTrackReceiver().getStream().hashCode()
-            + " numOfReceivers" + numOfReceivers
+        logger.info("***RtpEncodingDesc.setActive " + track.getMediaStreamTrackReceiver().getStream().hashCode()
+            + " numOfReceivers: " + numOfReceivers
             + " oldValue: " + this.active + " newValue: " + active);
         this.active = active;
     }
