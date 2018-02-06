@@ -218,6 +218,15 @@ public class MediaStreamTrackDesc
     {
         if (!simulcast)
         {
+            logger.info("***MSTD.update no simulcast, set active=true streamHash: " + getMediaStreamTrackReceiver().getStream().hashCode());
+            RTPEncodingDesc encoding = frameDesc.getRTPEncoding();
+            if(!encoding.isActive() && pkt.getPayloadLength(true) > 0) {
+                logger.info("***MSTD.update no simulcast, sending FIR on active=true streamHash: " + getMediaStreamTrackReceiver().getStream().hashCode());
+                // Request an independent frame because the stream is just becoming active.
+                ((RTPTranslatorImpl) mediaStreamTrackReceiver.getStream()
+                    .getRTPTranslator()).getRtcpFeedbackMessageSender()
+                    .sendFIR((int) rtpEncodings[0].getPrimarySSRC());
+            }
             frameDesc.getRTPEncoding().setActive(true);
             return;
         }
