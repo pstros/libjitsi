@@ -576,6 +576,7 @@ public class RTPTranslatorImpl
                                 streamRTPManager)
                             == null)
                     {
+                        LOGGER.warn("jm - adding receiveSSRC: " + ssrc);    
                         streamRTPManager.addReceiveSSRC(ssrc);
                     }
                     else

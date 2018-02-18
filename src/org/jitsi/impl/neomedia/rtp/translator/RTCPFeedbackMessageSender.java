@@ -306,7 +306,7 @@ public class RTCPFeedbackMessageSender
         {
             super.run();
 
-            this.maybeRequest(false);
+            this.maybeRequest(true);
         }
 
         /**
@@ -413,7 +413,7 @@ public class RTCPFeedbackMessageSender
             if (streamRTPManager == null)
             {
                 logger.warn("Not sending an FIR because the stream RTP " +
-                    "manager is null.");
+                    "manager is null. : " + (int) mediaSenderSSRC);
                 return false;
             }
 
