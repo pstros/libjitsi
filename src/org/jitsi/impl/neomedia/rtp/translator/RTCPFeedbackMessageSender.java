@@ -47,7 +47,8 @@ public class RTCPFeedbackMessageSender
      * initialization of the class {@code RTCPFeedbackMessageSender} cached for
      * the purposes of performance.
      */
-    private static final boolean TRACE = logger.isTraceEnabled();
+    // private static final boolean TRACE = logger.isTraceEnabled();
+    private static final boolean TRACE = true;
 
     /**
      * The interval in milliseconds at which we re-send an FIR, if the previous

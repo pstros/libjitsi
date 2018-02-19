@@ -327,7 +327,7 @@ public class RTCPPacketParserEx
                 fmtStr = Integer.toString(fb.fmt);
             if (detailStr == null)
                 detailStr = "";
-            logger.trace(
+            logger.warn(
                     "SSRC of packet sender: 0x" + Long.toHexString(senderSSRC)
                         + " (" + senderSSRC + "), SSRC of media source: 0x"
                         + Long.toHexString(sourceSSRC) + " (" + sourceSSRC

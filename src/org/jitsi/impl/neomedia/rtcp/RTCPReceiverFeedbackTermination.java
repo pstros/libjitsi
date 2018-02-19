@@ -428,6 +428,7 @@ public class RTCPReceiverFeedbackTermination
                             && fmt == RTCPFeedbackMessageEvent.FMT_FIR))
                     {
                         long source = RTCPFBPacket.getSourceSSRC(baf);
+                        logger.warn("jm:RTCPReceiverFeedbackTermination: " + source + " sent PLI. stream = " + stream.hashCode() + " try to request a keyframe.");
                         ((RTPTranslatorImpl) stream.getRTPTranslator())
                             .getRtcpFeedbackMessageSender()
                             .requestKeyframe(source);
