@@ -419,6 +419,7 @@ public class RTCPReceiverFeedbackTermination
                     it.remove();
                 }
 
+                logger.info("jm:doTransForm:send:" + send);
                 if (!send)
                 {
                     int fmt = RTCPHeaderUtils.getReportCount(baf);
