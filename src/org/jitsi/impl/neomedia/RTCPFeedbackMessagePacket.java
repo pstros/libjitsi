@@ -19,6 +19,7 @@ import javax.media.rtp.*;
 
 import org.jitsi.impl.neomedia.rtp.translator.*;
 import org.jitsi.service.neomedia.event.*;
+import org.jitsi.util.*;
 
 /**
  * Represents an RTCP feedback message packet as described by RFC 4585
@@ -31,6 +32,8 @@ import org.jitsi.service.neomedia.event.*;
 public class RTCPFeedbackMessagePacket
     implements Payload
 {
+    private static final Logger logger
+    = Logger.getLogger(RTCPFeedbackMessagePacket.class);
     /**
      * Feedback message type (FMT).
      */
@@ -221,6 +224,7 @@ public class RTCPFeedbackMessagePacket
      */
     public static void writeSSRC(long ssrc, byte[] buf, int off)
     {
+        logger.warn("jm:RTCPFeedbackPacket:writeSSRC:" + ssrc);
         buf[off++] = (byte) (ssrc >> 24);
         buf[off++] = (byte) ((ssrc >> 16) & 0xFF);
         buf[off++] = (byte) ((ssrc >> 8) & 0xFF);

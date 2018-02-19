@@ -16,6 +16,7 @@
 package org.jitsi.service.neomedia.event;
 
 import java.util.*;
+import org.jitsi.util.*;
 
 /**
  * Represents an event coming from RTCP that meant to tell codec
@@ -26,6 +27,8 @@ import java.util.*;
 public class RTCPFeedbackMessageEvent
     extends EventObject
 {
+    private static final Logger logger = Logger.getLogger(RTCPFeedbackMessageEvent.class);
+
     /**
      * Serial version UID.
      */
@@ -77,6 +80,8 @@ public class RTCPFeedbackMessageEvent
 
         this.feedbackMessageType = feedbackMessageType;
         this.payloadType = payloadType;
+
+        logger.warn("jm:RTCPFeedbackMessageEvent: " + feedbackMessageType);
     }
 
     /**
