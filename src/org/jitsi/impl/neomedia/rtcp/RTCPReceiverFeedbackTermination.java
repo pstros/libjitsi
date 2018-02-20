@@ -426,8 +426,11 @@ public class RTCPReceiverFeedbackTermination
 
                     logger.warn("jm:doTransForm:fmt: " + fmt + " PT_PS: " + pt);
 
-                    if ((pt == RTCPFeedbackMessageEvent.PT_PS
-                            && fmt == RTCPFeedbackMessageEvent.FMT_PLI)
+                    // if ((pt == RTCPFeedbackMessageEvent.PT_PS
+                    //         && fmt == RTCPFeedbackMessageEvent.FMT_PLI)
+                    //     || (pt == RTCPFeedbackMessageEvent.PT_PS
+                    //         && fmt == RTCPFeedbackMessageEvent.FMT_FIR))
+                    if ((pt == 206 && fmt == RTCPFeedbackMessageEvent.FMT_PLI)
                         || (pt == RTCPFeedbackMessageEvent.PT_PS
                             && fmt == RTCPFeedbackMessageEvent.FMT_FIR))
                     {
