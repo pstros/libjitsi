@@ -307,7 +307,7 @@ public class RTCPFeedbackMessageSender
         {
             super.run();
 
-            this.maybeRequest(true);
+            this.maybeRequest(false);
         }
 
         /**
@@ -382,7 +382,7 @@ public class RTCPFeedbackMessageSender
                         if (TRACE)
                         {
                             logger.trace("Pending FIRs to ssrc="
-                                + mediaSenderSSRC);
+                                + mediaSenderSSRC + " remainingRetries=" + remainingRetries);
                         }
 
                         return true;
