@@ -423,6 +423,9 @@ public class RTCPReceiverFeedbackTermination
                 if (!send)
                 {
                     int fmt = RTCPHeaderUtils.getReportCount(baf);
+
+                    logger.warn("jm:doTransForm:fmt: " + fmt + " PT_PS: " + pt);
+
                     if ((pt == RTCPFeedbackMessageEvent.PT_PS
                             && fmt == RTCPFeedbackMessageEvent.FMT_PLI)
                         || (pt == RTCPFeedbackMessageEvent.PT_PS
