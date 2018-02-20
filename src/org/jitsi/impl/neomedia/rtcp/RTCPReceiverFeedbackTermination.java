@@ -420,19 +420,18 @@ public class RTCPReceiverFeedbackTermination
                 }
 
                 logger.warn("jm:doTransForm:send:" + send);
-                if (!send)
+                if (!send && pt > -1)
                 {
                     int fmt = RTCPHeaderUtils.getReportCount(baf);
 
                     logger.warn("jm:doTransForm:fmt: " + fmt + " PT_PS: " + pt);
 
-                    // if ((pt == RTCPFeedbackMessageEvent.PT_PS
-                    //         && fmt == RTCPFeedbackMessageEvent.FMT_PLI)
-                    //     || (pt == RTCPFeedbackMessageEvent.PT_PS
-                    //         && fmt == RTCPFeedbackMessageEvent.FMT_FIR))
-                    if ((pt == 206 && fmt == RTCPFeedbackMessageEvent.FMT_PLI)
+                    if ((pt == RTCPFeedbackMessageEvent.PT_PS
+                            && fmt == RTCPFeedbackMessageEvent.FMT_PLI)
                         || (pt == RTCPFeedbackMessageEvent.PT_PS
                             && fmt == RTCPFeedbackMessageEvent.FMT_FIR))
+                    // if ((pt == 206 && fmt == RTCPFeedbackMessageEvent.FMT_PLI)
+                        // || (pt == 206 && fmt == RTCPFeedbackMessageEvent.FMT_FIR))
                     {
                         long source = RTCPFBPacket.getSourceSSRC(baf);
                         logger.warn("jm:RTCPReceiverFeedbackTermination: " + source + " sent PLI. stream = " + stream.hashCode() + " try to request a keyframe.");
