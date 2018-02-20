@@ -419,7 +419,7 @@ public class RTCPReceiverFeedbackTermination
                     it.remove();
                 }
 
-                if (!send)
+                if (!send && pt > -1)
                 {
                     int fmt = RTCPHeaderUtils.getReportCount(baf);
                     if ((pt == RTCPFeedbackMessageEvent.PT_PS
