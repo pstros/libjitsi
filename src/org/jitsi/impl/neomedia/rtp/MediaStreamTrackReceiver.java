@@ -21,14 +21,26 @@ import org.jitsi.service.neomedia.*;
 import org.jitsi.util.*;
 
 /**
- * This class is inserted in the receive transform chain and it updates the
- * {@link MediaStreamTrackDesc}s that is configured to receive.
+ * Contains the {@link MediaStreamTrackDesc}s for a {@link MediaStream}. It
+ * is also part of the {@link MediaStream}'s transform chain and has the
+ * opportunity to update its {@link MediaStreamTrackDesc}s with received
+ * packets.
+ * This default implementation does no update the {@link MediaStreamTrackDesc}s,
+ * it only serves to contain the signalled tracks and encodings.
  *
  * @author George Politis
+ * @author Boris Grozev
  */
 public class MediaStreamTrackReceiver
-    implements TransformEngine, PacketTransformer
+    extends SinglePacketTransformerAdapter
+    implements TransformEngine
 {
+    /**
+     * An empty array of {@link MediaStreamTrackDesc}.
+     */
+    private static final MediaStreamTrackDesc[] NO_TRACKS
+        = new MediaStreamTrackDesc[0];
+
     /**
      * The {@link MediaStreamImpl} that owns this instance.
      */
@@ -38,7 +50,7 @@ public class MediaStreamTrackReceiver
      * The {@link MediaStreamTrackDesc}s that this instance is configured to
      * receive.
      */
-    private MediaStreamTrackDesc[] tracks;
+    private MediaStreamTrackDesc[] tracks = NO_TRACKS;
 
     /**
      * Ctor.
@@ -48,85 +60,20 @@ public class MediaStreamTrackReceiver
      */
     public MediaStreamTrackReceiver(MediaStreamImpl stream)
     {
+        super(RTPPacketPredicate.INSTANCE);
+
         this.stream = stream;
     }
 
     /**
-     * Finds the {@link FrameDesc} that matches the RTP packet specified
-     * in the {@link ByteArrayBuffer} that is passed in as an argument.
+     * Finds the {@link RTPEncodingDesc} that matches the {@link RawPacket}
+     * passed in as a parameter. Assumes that the packet is valid.
      *
-     * @param buf the {@link ByteArrayBuffer} that specifies the
-     * {@link RawPacket}.
-     * @return the {@link FrameDesc} that matches the RTP packet specified
-     * in the {@link ByteArrayBuffer} that is passed in as an argument, or null
-     * if there is no matching {@link FrameDesc}.
-     */
-    public FrameDesc findFrameDesc(ByteArrayBuffer buf)
-    {
-        if (buf == null)
-        {
-            return null;
-        }
-
-        return findFrameDesc(
-            buf.getBuffer(), buf.getOffset(), buf.getLength());
-    }
-
-    /**
-     * Finds the {@link FrameDesc} that matches the RTP packet specified
-     * in the buffer passed in as an argument.
-     *
-     * @param buf the <tt>byte</tt> array that contains the RTP packet data.
-     * @param off the offset in <tt>buf</tt> at which the actual data starts.
-     * @param len the number of <tt>byte</tt>s in <tt>buf</tt> which
-     * constitute the actual data.
-     * @return the {@link FrameDesc} that matches the RTP packet specified
-     * in the buffer passed in as a parameter, or null if there is no matching
-     * {@link FrameDesc}.
-     */
-    public FrameDesc findFrameDesc(byte[] buf, int off, int len)
-    {
-        RTPEncodingDesc rtpEncoding = findRTPEncodingDesc(buf, off, len);
-        if (rtpEncoding == null)
-        {
-            return null;
-        }
-
-        return rtpEncoding.findFrameDesc(buf, off, len);
-    }
-
-    /**
-     * Finds the {@link RTPEncodingDesc} that matches {@link ByteArrayBuffer}
-     * passed in as a parameter.
-     *
-     * @param buf the {@link ByteArrayBuffer} of the {@link RTPEncodingDesc}
-     * to match.
+     * @param pkt the packet to match.
      * @return the {@link RTPEncodingDesc} that matches the pkt passed in as
      * a parameter, or null if there is no matching {@link RTPEncodingDesc}.
      */
-    public RTPEncodingDesc findRTPEncodingDesc(ByteArrayBuffer buf)
-    {
-        if (buf == null)
-        {
-            return null;
-        }
-
-        return findRTPEncodingDesc(
-            buf.getBuffer(), buf.getOffset(), buf.getLength());
-    }
-
-    /**
-     * Finds the {@link RTPEncodingDesc} that matches {@link ByteArrayBuffer}
-     * passed in as a parameter.
-     *
-     * @param buf the <tt>byte</tt> array that contains the RTP packet data.
-     * @param off the offset in <tt>buf</tt> at which the actual data starts.
-     * @param len the number of <tt>byte</tt>s in <tt>buf</tt> which
-     * constitute the actual data.
-     * @return the {@link RTPEncodingDesc} that matches the pkt passed in as
-     * a parameter, or null if there is no matching {@link RTPEncodingDesc}.
-     */
-    public RTPEncodingDesc findRTPEncodingDesc(byte[] buf, int off, int len)
+    public RTPEncodingDesc findRTPEncodingDesc(RawPacket pkt)
     {
         MediaStreamTrackDesc[] localTracks = tracks;
         if (ArrayUtils.isNullOrEmpty(localTracks))
@@ -136,7 +83,7 @@ public class MediaStreamTrackReceiver
 
         for (MediaStreamTrackDesc track : localTracks)
         {
-            RTPEncodingDesc encoding = track.findRTPEncodingDesc(buf, off, len);
+            RTPEncodingDesc encoding = track.findRTPEncodingDesc(pkt);
             if (encoding != null)
             {
                 return encoding;
@@ -194,15 +141,6 @@ public class MediaStreamTrackReceiver
     }
 
     /**
-     * {@inheritDoc}
-     */
-    @Override
-    public void close()
-    {
-
-    }
-
-    /**
      * Gets the {@link MediaStreamTrackDesc}s that this instance is configured
      * to receive.
      *
@@ -211,27 +149,39 @@ public class MediaStreamTrackReceiver
      */
     public MediaStreamTrackDesc[] getMediaStreamTracks()
     {
-        return tracks;
+        return tracks == null ? NO_TRACKS : tracks;
     }
 
     /**
      * Updates this {@link MediaStreamTrackReceiver} with the new RTP encoding
-     * parameters.
+     * parameters. Note that in order to avoid losing the state of existing
+     * {@link MediaStreamTrackDesc} instances, when one of the new instances
+     * matches (i.e. the primary SSRC of its first encoding matches) an old
+     * instance we keep the old instance.
+     * Currently we also keep the old instance's configuration (TODO use the
+     * new configuration).
      *
      * @param newTracks the {@link MediaStreamTrackDesc}s that this instance
-     * will receive.
+     * will receive. Note that the actual {@link MediaStreamTrackDesc} instances
+     * might not match. To get the actual instances call
+     * {@link #getMediaStreamTracks()}.
+     *
      * @return true if the MSTs have changed, otherwise false.
      */
     public boolean setMediaStreamTracks(MediaStreamTrackDesc[] newTracks)
     {
+        if (newTracks == null)
+        {
+            newTracks = NO_TRACKS;
+        }
+
         MediaStreamTrackDesc[] oldTracks = tracks;
         int oldTracksLen = oldTracks == null ? 0 : oldTracks.length;
-        int newTracksLen = newTracks == null ? 0 : newTracks.length;
 
-        if (oldTracksLen == 0 || newTracksLen == 0)
+        if (oldTracksLen == 0 || newTracks.length == 0)
         {
             tracks = newTracks;
-            return oldTracksLen != newTracksLen;
+            return oldTracksLen != newTracks.length;
         }
         else
         {
@@ -250,6 +200,8 @@ public class MediaStreamTrackReceiver
                     {
                         mergedTracks[i] = oldTracks[j];
                         cntMatched++;
+                        // TODO: update the old track instance with the
+                        // configuration of the new one.
                         break;
                     }
                 }
@@ -263,14 +215,15 @@ public class MediaStreamTrackReceiver
             tracks = mergedTracks;
 
             return
-                oldTracksLen != newTracksLen || cntMatched != oldTracks.length;
+                oldTracksLen != newTracks.length
+                    || cntMatched != oldTracks.length;
         }
     }
 
     /**
-     * Gets the {@code RtpChannel} that owns this instance.
+     * Gets the {@link MediaStream} that owns this instance.
      *
-     * @return the {@code RtpChannel} that owns this instance.
+     * @return the {@link MediaStream} that owns this instance.
      */
     public MediaStreamImpl getStream()
     {
@@ -301,39 +254,5 @@ public class MediaStreamTrackReceiver
         }
 
         return null;
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public RawPacket[] reverseTransform(RawPacket[] pkts)
-    {
-        long nowMs = System.currentTimeMillis();
-        for (int i = 0; i < pkts.length; i++)
-        {
-            if (!RTPPacketPredicate.INSTANCE.test(pkts[i]))
-            {
-                continue;
-            }
-
-            RTPEncodingDesc encoding = findRTPEncodingDesc(pkts[i]);
-
-            if (encoding != null)
-            {
-                encoding.update(pkts[i], nowMs);
-            }
-        }
-
-        return pkts;
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public RawPacket[] transform(RawPacket[] pkts)
-    {
-        return pkts;
     }
 }

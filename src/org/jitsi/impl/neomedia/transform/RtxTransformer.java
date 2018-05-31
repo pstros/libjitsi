@@ -219,7 +219,7 @@ public class RtxTransformer
             return -1;
         }
 
-        return encoding.getRTXSSRC();
+        return encoding.getSecondarySsrc(Constants.RTX);
     }
 
     /**
@@ -228,16 +228,16 @@ public class RtxTransformer
      * packet will be retransmitted as-is.
      *
      * @param pkt the packet to retransmit.
+     * @param rtxPt the RTX payload type to use for the re-transmitted packet.
      * @param after the {@code TransformEngine} in the chain of
      * {@code TransformEngine}s of the associated {@code MediaStream} after
      * which the injection of {@code pkt} is to begin
      * @return {@code true} if the packet was successfully retransmitted,
      * {@code false} otherwise.
      */
-    private boolean retransmit(RawPacket pkt, TransformEngine after)
+    private boolean retransmit(RawPacket pkt, Byte rtxPt, TransformEngine after)
     {
-        Byte rtxPt = apt2rtx.get(pkt.getPayloadType());
-        boolean destinationSupportsRtx =  rtxPt != null;
+        boolean destinationSupportsRtx = rtxPt != null;
         boolean retransmitPlain;
 
         if (destinationSupportsRtx)
@@ -302,8 +302,18 @@ public class RtxTransformer
                 continue;
             }
 
-            Byte pt = entry.getKey(),
-                apt = Byte.parseByte(format.getFormatParameters().get("apt"));
+            Byte pt = entry.getKey();
+            String aptString = format.getFormatParameters().get("apt");
+            Byte apt;
+            try
+            {
+                apt = Byte.parseByte(aptString);
+            }
+            catch (NumberFormatException nfe)
+            {
+                logger.error("Failed to parse apt: " + aptString);
+                continue;
+            }
 
             apt2rtx.put(apt, pt);
             rtx2apt.put(pt, apt);
@@ -477,14 +487,15 @@ public class RtxTransformer
                                 + ",send=" + send);
                     }
 
-                    if (send && retransmit(container.pkt, after))
+                    Byte rtxPt = apt2rtx.get(container.pkt.getPayloadType());
+                    if (send && retransmit(container.pkt, rtxPt, after))
                     {
                         stats.rtpPacketRetransmitted(
                             mediaSSRC, container.pkt.getLength());
 
                         // We just retransmitted the packet. Update its
-                        // timestamp so that we use the new timestamp when we
-                        // handle subsequent NACKs.
+                        // timestamp in the cache so that we use the new
+                        // timestamp when we handle subsequent NACKs.
                         cache.updateTimestamp(mediaSSRC, seq, now);
 
                         i.remove();
@@ -604,7 +615,7 @@ public class RtxTransformer
 
                     if (bytes - len > 0 && apt != null)
                     {
-                        retransmit(container.pkt, this);
+                        retransmit(container.pkt, apt, this);
                         bytes -= len;
                     }
                     else
@@ -646,8 +657,6 @@ public class RtxTransformer
                 return pkt;
             }
 
-            boolean success = false;
-
             if (pkt.getPayloadLength() - pkt.getPaddingSize() < 2)
             {
                 // We need at least 2 bytes to read the OSN field.
@@ -660,6 +669,7 @@ public class RtxTransformer
                 return null;
             }
 
+            boolean success = false;
             long mediaSsrc = getPrimarySsrc(pkt.getSSRCAsLong());
             if (mediaSsrc != -1)
             {

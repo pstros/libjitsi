@@ -24,19 +24,47 @@ import java.util.*;
 public class RTPUtils
 {
     /**
-     * Returns the difference between two RTP sequence numbers (modulo 2^16).
-     * @return the difference between two RTP sequence numbers (modulo 2^16).
+     * Hex characters for converting bytes to readable hex strings
      */
-    public static int sequenceNumberDiff(int a, int b)
+    private final static char[] HEXES = new char[]
+        {
+            '0', '1', '2', '3', '4', '5', '6', '7', '8',
+            '9', 'A', 'B', 'C', 'D', 'E', 'F'
+        };
+    /**
+     * Returns the delta between two RTP sequence numbers, taking into account
+     * rollover.  This will return the 'shortest' delta between the two
+     * sequence numbers in the form of the number you'd add to b to get a. e.g.:
+     * getSequenceNumberDelta(1, 10) -> -9 (10 + -9 = 1)
+     * getSequenceNumberDelta(1, 65530) -> 7 (65530 + 7 = 1)
+     * @return the delta between two RTP sequence numbers (modulo 2^16).
+     */
+    public static int getSequenceNumberDelta(int a, int b)
     {
         int diff = a - b;
 
         if (diff < -(1<<15))
-            diff += 1<<16;
+        {
+            diff += 1 << 16;
+        }
         else if (diff > 1<<15)
-            diff -= 1<<16;
+        {
+            diff -= 1 << 16;
+        }
 
         return diff;
+    }
+
+    /**
+     * Returns whether or not seqNumOne is 'older' than seqNumTwo, taking
+     * rollover into account
+     * @param seqNumOne
+     * @param seqNumTwo
+     * @return true if seqNumOne is 'older' than seqNumTwo
+     */
+    public static boolean isOlderSequenceNumberThan(int seqNumOne, int seqNumTwo)
+    {
+        return getSequenceNumberDelta(seqNumOne, seqNumTwo) < 0;
     }
 
     /**
@@ -47,7 +75,22 @@ public class RTPUtils
      */
     public static int subtractNumber(int a, int b)
     {
-        return (a - b) & 0xFFFF;
+        return as16Bits(a - b);
+    }
+
+
+    /**
+     * Apply a delta to a given sequence number and return the result (taking
+     * rollover into account)
+     * @param startingSequenceNumber the starting sequence number
+     * @param delta the delta to be applied
+     * @return the sequence number result from doing
+     * startingSequenceNumber + delta
+     */
+    public static int applySequenceNumberDelta(
+        int startingSequenceNumber, int delta)
+    {
+        return (startingSequenceNumber + delta) & 0xFFFF;
     }
 
     /**
@@ -105,42 +148,42 @@ public class RTPUtils
     }
 
     /**
-     * Read a integer from a buffer at a specified offset.
+     * Read an integer from a buffer at a specified offset.
      *
-     * @param buffer the buffer.
-     * @param offset start offset of the integer to be read.
+     * @param buf the buffer.
+     * @param off start offset of the integer to be read.
      */
-    public static int readInt(byte[] buffer, int offset)
+    public static int readInt(byte[] buf, int off)
     {
         return
-            ((buffer[offset++] & 0xFF) << 24)
-                | ((buffer[offset++] & 0xFF) << 16)
-                | ((buffer[offset++] & 0xFF) << 8)
-                | (buffer[offset] & 0xFF);
+            ((buf[off++] & 0xFF) << 24)
+                | ((buf[off++] & 0xFF) << 16)
+                | ((buf[off++] & 0xFF) << 8)
+                | (buf[off] & 0xFF);
     }
 
     /**
      * Reads a 32-bit unsigned integer from the given buffer at the given
      * offset and returns its {@link long} representation.
-     * @param buffer the buffer.
-     * @param offset start offset of the integer to be read.
+     * @param buf the buffer.
+     * @param off start offset of the integer to be read.
      */
-    public static long readUint32AsLong(byte[] buffer, int offset)
+    public static long readUint32AsLong(byte[] buf, int off)
     {
-        return readInt(buffer, offset) & 0xFFFFFFFFL;
+        return readInt(buf, off) & 0xFFFF_FFFFL;
     }
 
     /**
      * Read an unsigned short at a specified offset as an int.
      *
-     * @param buffer the buffer from which to read.
-     * @param offset start offset of the unsigned short
+     * @param buf the buffer from which to read.
+     * @param off start offset of the unsigned short
      * @return the int value of the unsigned short at offset
      */
-    public static int readUint16AsInt(byte[] buffer, int offset)
+    public static int readUint16AsInt(byte[] buf, int off)
     {
-        int b1 = (0xFF & (buffer[offset + 0]));
-        int b2 = (0xFF & (buffer[offset + 1]));
+        int b1 = (0xFF & (buf[off + 0]));
+        int b2 = (0xFF & (buf[off + 1]));
         int val = b1 << 8 | b2;
         return val;
     }
@@ -148,17 +191,17 @@ public class RTPUtils
     /**
      * Read a signed short at a specified offset as an int.
      *
-     * @param buffer the buffer from which to read.
-     * @param offset start offset of the unsigned short
+     * @param buf the buffer from which to read.
+     * @param off start offset of the unsigned short
      * @return the int value of the unsigned short at offset
      */
-    public static int readInt16AsInt(byte[] buffer, int offset)
+    public static int readInt16AsInt(byte[] buf, int off)
     {
-        int ret = ((0xFF & (buffer[offset])) << 8)
-            | (0xFF & (buffer[offset + 1]));
+        int ret = ((0xFF & (buf[off])) << 8)
+            | (0xFF & (buf[off + 1]));
         if ((ret & 0x8000) != 0)
         {
-            ret = (ret & 0x7fff) | 0x8000_0000;
+            ret = ret | 0xFFFF_0000;
         }
 
         return ret;
@@ -167,16 +210,38 @@ public class RTPUtils
     /**
      * Read an unsigned short at specified offset as a int
      *
-     * @param buffer
-     * @param offset start offset of the unsigned short
+     * @param buf
+     * @param off start offset of the unsigned short
      * @return the int value of the unsigned short at offset
      */
-    public static int readUint24AsInt(byte[] buffer, int offset)
+    public static int readUint24AsInt(byte[] buf, int off)
     {
-        int b1 = (0xFF & (buffer[offset + 0]));
-        int b2 = (0xFF & (buffer[offset + 1]));
-        int b3 = (0xFF & (buffer[offset + 2]));
+        int b1 = (0xFF & (buf[off + 0]));
+        int b2 = (0xFF & (buf[off + 1]));
+        int b3 = (0xFF & (buf[off + 2]));
         return b1 << 16 | b2 << 8 | b3;
+    }
+
+    /**
+     * Returns the given integer masked to 16 bits
+     * @param value the integer to mask
+     * @return the value, masked to only keep the lower
+     * 16 bits
+     */
+    public static int as16Bits(int value)
+    {
+        return value & 0xFFFF;
+    }
+
+    /**
+     * Returns the given integer masked to 32 bits
+     * @param value the integer to mask
+     * @return the value, masked to only keep the lower
+     * 32 bits
+     */
+    public static long as32Bits(long value)
+    {
+        return value & 0xFFFF_FFFFL;
     }
 
     /**
@@ -203,18 +268,120 @@ public class RTPUtils
             else if (a > b)
             {
                 if (a - b < 0x10000)
+                {
                     return 1;
+                }
                 else
+                {
                     return -1;
+                }
             }
             else //a < b
             {
                 if (b - a < 0x10000)
+                {
                     return -1;
+                }
                 else
+                {
                     return 1;
+                }
             }
         }
     };
 
+    /**
+     * Returns the difference between two RTP timestamps.
+     * @return the difference between two RTP timestamps.
+     */
+    public static long rtpTimestampDiff(long a, long b)
+    {
+        long diff = a - b;
+        if (diff < -(1L<<31))
+        {
+            diff += 1L << 32;
+        }
+        else if (diff > 1L<<31)
+        {
+            diff -= 1L << 32;
+        }
+
+        return diff;
+    }
+
+    /**
+     * Returns whether or not the first given timestamp is newer than the second
+     * @param a
+     * @param b
+     * @return true if a is newer than b, false otherwise
+     */
+    public static boolean isNewerTimestampThan(long a, long b)
+    {
+        return rtpTimestampDiff(a, b) > 0;
+    }
+
+    /**
+     * Return a string containing the hex string version of the given byte
+     * @param b
+     * @return
+     */
+    private static String toHexString(byte b)
+    {
+
+        StringBuilder hexStringBuilder = new StringBuilder(2);
+
+        hexStringBuilder.append(HEXES[(b & 0xF0) >> 4]);
+        hexStringBuilder.append(HEXES[b & 0x0F]);
+
+        return hexStringBuilder.toString();
+    }
+
+    /**
+     * Return a string containing the hex string version of the given bytes
+     * @param buf
+     * @return
+     */
+    public static String toHexString(byte[] buf)
+    {
+        return toHexString(buf, 0, buf.length);
+    }
+
+    /**
+     * Return a string containing the hex string version of the given byte
+     * @param buf
+     * @param off
+     * @param len
+     * @return
+     */
+    public static String toHexString(byte[] buf, int off, int len)
+    {
+        if (buf == null)
+        {
+            return null;
+        }
+        else
+        {
+            StringBuilder hexStringBuilder
+                = new StringBuilder(2 * buf.length);
+
+            for (int i = 0; i < len; i++)
+            {
+                if (i % 16 == 0)
+                {
+                    hexStringBuilder.append("\n")
+                        .append(toHexString((byte)i))
+                        .append("  ");
+                }
+                else if (i % 8 == 0)
+                {
+                    hexStringBuilder.append(" ");
+                }
+                byte b = buf[off + i];
+
+                hexStringBuilder.append(toHexString(b));
+                hexStringBuilder.append(" ");
+            }
+            return hexStringBuilder.toString();
+        }
+    }
 }

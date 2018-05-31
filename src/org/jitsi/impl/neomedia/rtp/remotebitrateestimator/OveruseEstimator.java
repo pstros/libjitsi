@@ -15,6 +15,9 @@
  */
 package org.jitsi.impl.neomedia.rtp.remotebitrateestimator;
 
+import org.jitsi.util.*;
+import org.jetbrains.annotations.*;
+
 import java.util.*;
 
 /**
@@ -25,6 +28,14 @@ import java.util.*;
  */
 class OveruseEstimator
 {
+    /**
+     * The <tt>Logger</tt> used by the
+     * <tt>RemoteBitrateEstimatorAbsSendTime</tt> class and its instances for
+     * logging output.
+     */
+    private static final Logger logger
+        = Logger.getLogger(OveruseEstimator.class);
+
     private static final int kDeltaCounterMax = 1000;
 
     private static final int kMinFramePeriodHistoryLength = 60;
@@ -51,6 +62,8 @@ class OveruseEstimator
     private double avgNoise;
 
     private final double[][] E;
+
+    private DiagnosticContext diagnosticContext;
 
     /**
      * Reduces the effects of allocations and garbage collection of the method
@@ -94,14 +107,17 @@ class OveruseEstimator
     private final double[] tsDeltaHist = new double[kMinFramePeriodHistoryLength];
 
     /**
-     * Index to insert next value into {@link tsDeltaHist}
+     * Index to insert next value into {@link #tsDeltaHist}
      */
     private int tsDeltaHistInsIdx;
 
     private double varNoise;
 
-    public OveruseEstimator(OverUseDetectorOptions options)
+    public OveruseEstimator(
+            OverUseDetectorOptions options,
+            @NotNull DiagnosticContext diagnosticContext)
     {
+        this.diagnosticContext = diagnosticContext;
         slope = options.initialSlope;
         offset = options.initialOffset;
         prevOffset = offset;
@@ -162,11 +178,10 @@ class OveruseEstimator
             long tDelta,
             double tsDelta,
             int sizeDelta,
-            BandwidthUsage currentHypothesis)
+            BandwidthUsage currentHypothesis, long systemTimeMs)
     {
         double minFramePeriod = updateMinFramePeriod(tsDelta);
         double tTsDelta = tDelta - tsDelta;
-        double fsDelta = sizeDelta;
 
         ++numOfDeltas;
         if (numOfDeltas > kDeltaCounterMax)
@@ -187,7 +202,7 @@ class OveruseEstimator
         double[] h = this.h;
         double[] Eh = this.Eh;
 
-        h[0] = fsDelta;
+        h[0] = sizeDelta;
         h[1] = 1D;
         Eh[0] = E[0][0] * h[0] + E[0][1] * h[1];
         Eh[1] = E[1][0] * h[0] + E[1][1] * h[1];
@@ -240,6 +255,18 @@ class OveruseEstimator
         slope = slope + K[0] * residual;
         prevOffset = offset;
         offset = offset + K[1] * residual;
+
+        if (logger.isTraceEnabled())
+        {
+            logger.trace(diagnosticContext
+                .makeTimeSeriesPoint("delay_variation_estimation", systemTimeMs)
+                .addKey("estimator", hashCode())
+                .addField("time_delta", tDelta)
+                .addField("ts_delta", tsDelta)
+                .addField("tts_delta", tTsDelta)
+                .addField("offset", offset)
+                .addField("hypothesis", currentHypothesis.getValue()));
+        }
     }
 
     private double updateMinFramePeriod(double tsDelta)

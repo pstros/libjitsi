@@ -13,22 +13,28 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.jitsi.impl.neomedia.rtcp;
+package org.jitsi.util;
 
-import net.sf.fmj.media.rtp.*;
-import org.jitsi.impl.neomedia.*;
 import org.jitsi.service.neomedia.*;
-import org.jitsi.util.*;
 
 /**
  * Utility class that contains static methods for RTCP header manipulation.
  *
- * TODO maybe merge into the RTCPHeader class.
- *
  * @author George Politis
  */
-public class RTCPHeaderUtils
+public class RTCPUtils
 {
+    /**
+     * The values of the Version field for RTCP packets.
+     */
+    public static int VERSION = 2;
+
+    /**
+     * The size in bytes of the smallest possible RTCP packet (e.g. an empty
+     * Receiver Report).
+     */
+    public static int MIN_SIZE = 8;
+
     /**
      * Gets the RTCP packet type.
      *
@@ -40,7 +46,7 @@ public class RTCPHeaderUtils
      */
     public static int getPacketType(byte[] buf, int off, int len)
     {
-        if (!isValid(buf, off, len))
+        if (!isHeaderValid(buf, off, len))
         {
             return -1;
         }
@@ -79,7 +85,7 @@ public class RTCPHeaderUtils
     private static int setSenderSSRC(
         byte[] buf, int off, int len, int senderSSRC)
     {
-        if (!isValid(buf, off, len))
+        if (!isHeaderValid(buf, off, len))
         {
             return -1;
         }
@@ -88,7 +94,9 @@ public class RTCPHeaderUtils
     }
 
     /**
-     * Gets the RTCP packet length in bytes.
+     * Gets the RTCP packet length in bytes as specified by the length field
+     * of the RTCP packet (does not verify that the buffer is actually large
+     * enough).
      *
      * @param buf the byte buffer that contains the RTCP header.
      * @param off the offset in the byte buffer where the RTCP header starts.
@@ -98,7 +106,7 @@ public class RTCPHeaderUtils
      */
     public static int getLength(byte[] buf, int off, int len)
     {
-        // XXX Do not check with isValid.
+        // XXX Do not check with isHeaderValid.
         if (buf == null || buf.length < off + len || len < 4)
         {
             return -1;
@@ -121,7 +129,7 @@ public class RTCPHeaderUtils
      */
     public static int getVersion(byte[] buf, int off, int len)
     {
-        // XXX Do not check with isValid.
+        // XXX Do not check with isHeaderValid.
         if (buf == null || buf.length < off + len || len < 1)
         {
             return -1;
@@ -131,7 +139,8 @@ public class RTCPHeaderUtils
     }
 
     /**
-     * Checks whether the RTCP header is valid or not. It does so by checking
+     * Checks whether the RTCP header is valid or not (note that a valid header
+     * does not necessarily imply a valid packet). It does so by checking
      * the RTCP header version and makes sure the buffer is at least 8 bytes
      * long.
      *
@@ -141,16 +150,16 @@ public class RTCPHeaderUtils
      * data.
      * @return true if the RTCP packet is valid, false otherwise.
      */
-    public static boolean isValid(byte[] buf, int off, int len)
+    public static boolean isHeaderValid(byte[] buf, int off, int len)
     {
-        int version = RTCPHeaderUtils.getVersion(buf, off, len);
-        if (version != RTCPHeader.VERSION)
+        int version = RTCPUtils.getVersion(buf, off, len);
+        if (version != VERSION)
         {
             return false;
         }
 
-        int pktLen = RTCPHeaderUtils.getLength(buf, off, len);
-        if (pktLen < RTCPHeader.SIZE)
+        int pktLen = RTCPUtils.getLength(buf, off, len);
+        if (pktLen < MIN_SIZE)
         {
             return false;
         }
@@ -234,4 +243,31 @@ public class RTCPHeaderUtils
 
         return getLength(baf.getBuffer(), baf.getOffset(), baf.getLength());
     }
+
+    /**
+     * Checks whether the buffer described by the parameters looks like an
+     * RTCP packet. It only checks the Version and Packet Type fields, as
+     * well as a minimum length.
+     * This method returning {@code true} does not necessarily mean that the
+     * given packet is a valid RTCP packet, but it should be parsed as RTCP
+     * (as opposed to as e.g. RTP or STUN).
+     *
+     * @param buf
+     * @param off
+     * @param len
+     * @return {@code true} if the described packet looks like RTCP.
+     */
+    public static boolean isRtcp(byte[] buf, int off, int len)
+    {
+        if (!isHeaderValid(buf, off, len))
+        {
+            return false;
+        }
+
+        int pt = getPacketType(buf, off, len);
+
+        // Other packet types are used for RTP.
+        return 200 <= pt && pt <= 211;
+    }
+
 }

@@ -16,7 +16,6 @@
 package org.jitsi.impl.neomedia;
 
 import java.awt.*;
-import java.net.*;
 import java.util.*;
 import java.util.List;
 import java.util.regex.*;
@@ -32,8 +31,8 @@ import org.jitsi.impl.neomedia.rtcp.*;
 import org.jitsi.impl.neomedia.rtp.*;
 import org.jitsi.impl.neomedia.rtp.remotebitrateestimator.*;
 import org.jitsi.impl.neomedia.rtp.sendsidebandwidthestimation.*;
-import org.jitsi.impl.neomedia.rtp.translator.*;
 import org.jitsi.impl.neomedia.transform.*;
+import org.jitsi.impl.neomedia.transform.fec.*;
 import org.jitsi.service.configuration.*;
 import org.jitsi.service.libjitsi.*;
 import org.jitsi.service.neomedia.*;
@@ -425,13 +424,19 @@ public class VideoMediaStreamImpl
      * remote endpoint.
      */
     private final MediaStreamTrackReceiver mediaStreamTrackReceiver
-        = new MediaStreamTrackReceiver(this);
+        = new VideoMediaStreamTrackReceiver(this);
 
     /**
      * The transformer which handles outgoing rtx (RFC-4588) packets for this
      * {@link VideoMediaStreamImpl}.
      */
     private final RtxTransformer rtxTransformer = new RtxTransformer(this);
+
+    /**
+     * The transformer which handles incoming and outgoing fec
+     */
+    private TransformEngineWrapper<FECTransformEngine> fecTransformEngineWrapper =
+        new TransformEngineWrapper<>();
 
     /**
      * The instance that terminates RRs and REMBs.
@@ -448,13 +453,13 @@ public class VideoMediaStreamImpl
      * The <tt>RemoteBitrateEstimator</tt> which computes bitrate estimates for
      * the incoming RTP streams.
      */
-    private final RemoteBitrateEstimator remoteBitrateEstimator
-        = new RemoteBitrateEstimatorSingleStream(
+    private final RemoteBitrateEstimatorWrapper remoteBitrateEstimator
+        = new RemoteBitrateEstimatorWrapper(
                 new RemoteBitrateObserver()
                 {
                     @Override
                     public void onReceiveBitrateChanged(
-                            Collection<Integer> ssrcs,
+                            Collection<Long> ssrcs,
                             long bitrate)
                     {
                         VideoMediaStreamImpl.this
@@ -462,7 +467,7 @@ public class VideoMediaStreamImpl
                                     ssrcs,
                                     bitrate);
                     }
-                });
+                }, getDiagnosticContext());
 
     /**
      * The facility which aids this instance in managing a list of
@@ -520,17 +525,6 @@ public class VideoMediaStreamImpl
     {
         super(connector, device, srtpControl);
 
-        // Register the RemoteBitrateEstimator with the
-        // RecurringRunnableExecutor.
-        RemoteBitrateEstimator remoteBitrateEstimator
-            = getRemoteBitrateEstimator();
-
-        if (remoteBitrateEstimator instanceof RecurringRunnable)
-        {
-            recurringRunnableExecutor.registerRecurringRunnable(
-                    (RecurringRunnable) remoteBitrateEstimator);
-        }
-
         recurringRunnableExecutor.registerRecurringRunnable(rtcpFeedbackTermination);
     }
 
@@ -541,6 +535,25 @@ public class VideoMediaStreamImpl
     public RtxTransformer getRtxTransformer()
     {
         return rtxTransformer;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    protected TransformEngineWrapper<FECTransformEngine> getFecTransformEngine()
+    {
+        return this.fecTransformEngineWrapper;
+    }
+
+    /**
+     * {@inheritDoc}
+     * @param fecTransformEngine
+     */
+    @Override
+    protected void setFecTransformEngine(FECTransformEngine fecTransformEngine)
+    {
+        this.fecTransformEngineWrapper.setWrapped(fecTransformEngine);
     }
 
     /**
@@ -561,6 +574,16 @@ public class VideoMediaStreamImpl
     public void setSupportsPli(boolean supportsPli)
     {
         this.supportsPli = supportsPli;
+    }
+
+    /**
+     * Sets the value of the flag which indicates whether the remote end
+     * supports RTCP REMB or not.
+     * @param supportsRemb the value to set.
+     */
+    public void setSupportsRemb(boolean supportsRemb)
+    {
+        remoteBitrateEstimator.setSupportsRemb(supportsRemb);
     }
 
     /**
@@ -625,17 +648,6 @@ public class VideoMediaStreamImpl
         }
         finally
         {
-            // Deregister the RemoteBitrateEstimator with the
-            // RecurringRunnableExecutor.
-            RemoteBitrateEstimator remoteBitrateEstimator
-                = getRemoteBitrateEstimator();
-
-            if (remoteBitrateEstimator instanceof RecurringRunnable)
-            {
-                recurringRunnableExecutor.deRegisterRecurringRunnable(
-                        (RecurringRunnable) remoteBitrateEstimator);
-            }
-
             if (cachingTransformer != null)
             {
                 recurringRunnableExecutor.deRegisterRecurringRunnable(
@@ -950,7 +962,7 @@ public class VideoMediaStreamImpl
      * {@inheritDoc}
      */
     @Override
-    public RemoteBitrateEstimator getRemoteBitrateEstimator()
+    public RemoteBitrateEstimatorWrapper getRemoteBitrateEstimator()
     {
         return remoteBitrateEstimator;
     }
@@ -1222,7 +1234,7 @@ public class VideoMediaStreamImpl
      * @param bitrate
      */
     private void remoteBitrateEstimatorOnReceiveBitrateChanged(
-            Collection<Integer> ssrcs,
+            Collection<Long> ssrcs,
             long bitrate)
     {
         // TODO Auto-generated method stub
@@ -1365,7 +1377,7 @@ public class VideoMediaStreamImpl
      * {@inheritDoc}
      */
     @Override
-    protected RTCPReceiverFeedbackTermination getRTCPTermination()
+    protected TransformEngine getRTCPTermination()
     {
         return rtcpFeedbackTermination;
     }
@@ -1387,7 +1399,11 @@ public class VideoMediaStreamImpl
         if (bandwidthEstimator == null)
         {
             bandwidthEstimator = new BandwidthEstimatorImpl(this);
-            logger.info("Creating a BandwidthEstimator for stream " + this);
+            if (logger.isDebugEnabled())
+            {
+                logger.debug(
+                    "Creating a BandwidthEstimator for stream " + this);
+            }
         }
         return bandwidthEstimator;
     }

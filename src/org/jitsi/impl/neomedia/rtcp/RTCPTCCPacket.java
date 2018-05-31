@@ -19,7 +19,6 @@ import net.sf.fmj.media.rtp.*;
 import org.jitsi.service.neomedia.*;
 import org.jitsi.util.*;
 
-import java.io.*;
 import java.util.*;
 
 /**
@@ -56,22 +55,29 @@ import java.util.*;
  * }</pre>
  *
  * @author Boris Grozev
+ * @author George Politis
  */
 public class RTCPTCCPacket
     extends RTCPFBPacket
 {
     /**
+     * The maximum number of packets (including missing packets) to include
+     * in an {@link RTCPTCCPacket} being constructed for a list of packets.
+     */
+    public static final int MAX_PACKET_COUNT = 200;
+
+    /**
      * Gets a boolean indicating whether or not the RTCP packet specified in the
-     * {@link ByteArrayBuffer} that is passed as an argument is a NACK packet or
+     * {@link ByteArrayBuffer} that is passed as an argument is a TCC packet or
      * not.
      *
      * @param baf the {@link ByteArrayBuffer}
-     * @return true if the byte array buffer holds a NACK packet, otherwise
+     * @return true if the byte array buffer holds a TCC packet, otherwise
      * false.
      */
     public static boolean isTCCPacket(ByteArrayBuffer baf)
     {
-        int rc = RTCPHeaderUtils.getReportCount(baf);
+        int rc = RTCPUtils.getReportCount(baf);
         return rc == FMT && isRTPFBPacket(baf);
     }
 
@@ -81,13 +87,35 @@ public class RTCPTCCPacket
      * Warning: the timestamps are represented in the 250µs format used by the
      * on-the-wire format, and don't represent local time. This is different
      * than the timestamps expected as input when constructing a packet with
-     * {@link RTCPTCCPacket#RTCPTCCPacket(long, long, PacketMap, byte)}.
+     * {@link RTCPTCCPacket#RTCPTCCPacket(long, long, PacketMap, byte,
+     * DiagnosticContext)}.
      *
      * @param baf the buffer which contains the RTCP packet.
      */
     public static PacketMap getPackets(ByteArrayBuffer baf)
     {
-        return getPacketsFci(getFCI(baf));
+        return getPacketsFromFci(getFCI(baf));
+    }
+
+    /**
+     * @return the reference time of the FCI buffer of an RTCP TCC packet.
+     *
+     * The format is 32 bits with 250µs resolution. Note that the format in the
+     * transport-wide cc draft is 24bit with 2^6ms resolution. The change in the
+     * unit facilitates the arrival time computations, as the deltas have 250µs
+     * resolution.
+     */
+    public static long getReferenceTime250us(ByteArrayBuffer fciBuffer)
+    {
+        byte[] buf = fciBuffer.getBuffer();
+        int off = fciBuffer.getOffset();
+
+        // reference time. The 24 bit field uses increments of 2^6ms, and we
+        // shift by 8 to change the resolution to 250µs.
+        // FIXME this is supposed to be a signed int.
+        long referenceTime = RTPUtils.readUint24AsInt(buf, off + 4) << 8;
+
+        return referenceTime;
     }
 
     /**
@@ -97,65 +125,88 @@ public class RTCPTCCPacket
      * Warning: the timestamps are represented in the 250µs format used by the
      * on-the-wire format, and don't represent local time. This is different
      * than the timestamps expected as input when constructing a packet with
-     * {@link RTCPTCCPacket#RTCPTCCPacket(long, long, PacketMap, byte)}.
+     * {@link RTCPTCCPacket#RTCPTCCPacket(long, long, PacketMap, byte,
+     * DiagnosticContext)}.
+     *
+     * Note that packets described as lost are NOT included in the results.
      *
      * @param fciBuffer the buffer which contains the FCI portion of the RTCP
      * feedback packet.
      */
-    public static PacketMap getPacketsFci(ByteArrayBuffer fciBuffer)
+    public static PacketMap getPacketsFromFci(ByteArrayBuffer fciBuffer)
     {
-        if (fciBuffer == null)
+        return getPacketsFromFci(fciBuffer, false);
+    }
+
+    /**
+     * @return the packets represented in the FCI portion of an RTCP
+     * transport-cc feedback packet.
+     *
+     * Warning: the timestamps are represented in the 250µs format used by the
+     * on-the-wire format, and don't represent local time. This is different
+     * than the timestamps expected as input when constructing a packet with
+     * {@link RTCPTCCPacket#RTCPTCCPacket(long, long, PacketMap, byte,
+     * DiagnosticContext)}.
+     *
+     * @param fciBuffer the buffer which contains the FCI portion of the RTCP
+     * feedback packet.
+     * @param includeNotReceived whether the returned map should include the
+     * packets described in the feedback packet as lost. Note that the RLE
+     * encoding allows ~2^16 packets to be described as lost in just a few
+     * bytes, so when parsing packets coming over the network it is wise to
+     * not blindly set this option to {@code true}.
+     */
+    static PacketMap getPacketsFromFci(
+        ByteArrayBuffer fciBuffer, boolean includeNotReceived)
+    {
+        int fciLen = -1;
+        if (fciBuffer == null
+            || (fciLen = fciBuffer.getLength()) < MIN_FCI_LENGTH)
         {
+            logger.warn(
+                PARSE_ERROR + "buffer is null or length too small: " + fciLen);
             return null;
         }
 
-        byte[] buf = fciBuffer.getBuffer();
-        int off = fciBuffer.getOffset();
-        int len = fciBuffer.getLength();
+        byte[] fciBuf = fciBuffer.getBuffer();
+        int fciOff = fciBuffer.getOffset();
 
-        if (len < MIN_FCI_LENGTH)
-        {
-            logger.warn(PARSE_ERROR + "length too small: " + len);
-            return null;
-        }
+        // The fixed fields. The current sequence number starts from the one
+        // in the 'base sequence number' field and increments as we parse.
+        int currentSeq = RTPUtils.readUint16AsInt(fciBuf, fciOff);
+        int packetStatusCount = RTPUtils.readUint16AsInt(fciBuf, fciOff + 2);
 
-        // The fixed fields
-        int baseSeq = RTPUtils.readUint16AsInt(buf, off);
-        int packetStatusCount = RTPUtils.readUint16AsInt(buf, off + 2);
-
-        // reference time. The 24 bit field uses increments of 2^6ms, and we
-        // shift by 8 to change the resolution to 250µs.
-        long referenceTime = RTPUtils.readUint24AsInt(buf, off + 4) << 8;
+        long referenceTime = getReferenceTime250us(fciBuffer);
 
         // The offset at which the packet status chunk list starts.
-        int pscOff = off + 8;
+        int currentPscOff = fciOff + PACKET_STATUS_CHUNK_OFFSET;
 
         // First find where the delta list begins.
         int packetsRemaining = packetStatusCount;
         while (packetsRemaining > 0)
         {
-            if (pscOff + 2 > off + len)
+            if (currentPscOff + CHUNK_SIZE_BYTES > fciOff + fciLen)
             {
                 logger.warn(PARSE_ERROR + "reached the end while reading chunks");
                 return null;
             }
 
-            int packetsInChunk = getPacketCount(buf, pscOff);
+            int packetsInChunk = getPacketCount(fciBuf, currentPscOff);
             packetsRemaining -= packetsInChunk;
 
-            pscOff += 2; // all chunks are 16bit
+            currentPscOff += CHUNK_SIZE_BYTES;
         }
 
         // At this point we have the the beginning of the delta list. Start
         // reading from the chunk and delta lists together.
-        int deltaStart = pscOff;
-        int deltaOff = pscOff;
+        int deltaOff = currentPscOff;
+        int currentDeltaOff = currentPscOff;
 
         // Reset to the start of the chunks list.
-        pscOff = off + 8;
+        currentPscOff = fciOff + PACKET_STATUS_CHUNK_OFFSET;
         packetsRemaining = packetStatusCount;
         PacketMap packets = new PacketMap();
-        while (packetsRemaining > 0 && pscOff < deltaStart)
+        while (packetsRemaining > 0 && currentPscOff < deltaOff)
         {
             // packetsRemaining is based on the "packet status count" field,
             // which helps us find the correct number of packets described in
@@ -163,71 +214,122 @@ public class RTCPTCCPacket
             // don't really know by the chunk alone how many packets are
             // described.
             int packetsInChunk
-                = Math.min(getPacketCount(buf, pscOff), packetsRemaining);
+                = Math.min(getPacketCount(fciBuf, currentPscOff), packetsRemaining);
 
-            // TODO: do not loop for RLE NR chunks.
-            // Read deltas for all packets in the chunk.
-            for (int i = 0; i < packetsInChunk; i++)
+            int chunkType = getChunkType(fciBuf, currentPscOff);
+
+            if (packetsInChunk > 0 && chunkType == CHUNK_TYPE_RLE
+                && readSymbol(fciBuf, currentPscOff, chunkType, 0) == SYMBOL_NOT_RECEIVED)
             {
-                int symbol = readSymbol(buf, pscOff, i);
-                // -1 or delta in 250µs increments
-                int delta = -1;
-                switch (symbol)
+                // This is an RLE chunk with NOT_RECEIVED symbols. So we can
+                // avoid reading every symbol individually in a loop.
+                if (includeNotReceived)
                 {
-                case SYMBOL_SMALL_DELTA:
-                    // The delta is an 8-bit unsigned integer.
-                    if (deltaOff >= off + len)
+                    for (int i = 0; i < packetsInChunk; i++)
                     {
-                        logger.warn(PARSE_ERROR
-                                + "reached the end while reading delta.");
+                        int seq = (currentSeq + i) % 0xffff;
+                        logPacket(seq, NEGATIVE_ONE, -1, SYMBOL_NOT_RECEIVED);
+                        packets.put(seq, NEGATIVE_ONE);
+                    }
+                }
+                currentSeq = (currentSeq + packetsInChunk) % 0xffff;
+            }
+            else
+            {
+                // Read deltas for all packets in the chunk.
+                for (int i = 0; i < packetsInChunk; i++)
+                {
+                    int symbol = readSymbol(fciBuf, currentPscOff, chunkType, i);
+                    // -1 or delta in 250µs increments
+                    int delta = -1;
+                    switch (symbol)
+                    {
+                    case SYMBOL_SMALL_DELTA:
+                        // The delta is an 8-bit unsigned integer.
+                        if (currentDeltaOff >= fciOff + fciLen)
+                        {
+                            logger.warn(
+                                PARSE_ERROR
+                                    + "reached the end while reading delta.");
+
+                            return null;
+                        }
+                        delta = fciBuf[currentDeltaOff++] & 0xff;
+                        break;
+                    case SYMBOL_LARGE_DELTA:
+                        // The delta is a 16-bit signed integer.
+                        if (currentDeltaOff + 1 >= fciOff + fciLen) // we're about to read
+                            // 2 bytes
+                        {
+                            logger.warn(PARSE_ERROR
+                                            + "reached the end while reading " +
+                                            "long delta.");
+                            return null;
+                        }
+                        delta = RTPUtils.readInt16AsInt(fciBuf, currentDeltaOff);
+                        currentDeltaOff += 2;
+                        break;
+                    case SYMBOL_NOT_RECEIVED:
+                        delta = -1;
+                        break;
+                    default:
+                        logger.warn(PARSE_ERROR + " invalid symbol: " + symbol);
                         return null;
                     }
-                    delta = buf[deltaOff++] & 0xff;
-                    break;
-                case SYMBOL_LARGE_DELTA:
-                    // The delta is a 6-bit signed integer.
-                    if (deltaOff + 1 >= off + len) // we're about to read 2 bytes
+
+                    if (delta == -1)
                     {
-                        logger.warn(PARSE_ERROR
-                                + "reached the end while reading long delta.");
-                        return null;
+                        // Packet not received. We don't update the reference
+                        // time,
+                        // but we push the packet in the map to indicate that
+                        // it was
+                        // marked as not received.
+                        if (includeNotReceived)
+                        {
+                            logPacket(currentSeq, NEGATIVE_ONE, delta, symbol);
+                            packets.put(currentSeq, NEGATIVE_ONE);
+                        }
                     }
-                    delta = RTPUtils.readInt16AsInt(buf, deltaOff);
-                    deltaOff += 2;
-                    break;
-                case SYMBOL_NOT_RECEIVED:
-                default:
-                    delta = -1;
-                    break;
-                }
+                    else
+                    {
+                        // The draft is not clear about what the reference time
+                        // for each packet is. We adhere to the webrtc.org
+                        // behavior so that every packet for which there is a
+                        // delta updates the reference (even if the delta is
+                        // negative).
+                        referenceTime += delta;
+                        logPacket(currentSeq, referenceTime, delta, symbol);
+                        packets.put(currentSeq, referenceTime);
+                    }
 
-                if (delta == -1)
-                {
-                    // Packet not received. We don't update the reference time,
-                    // but we push the packet in the map to indicate that it was
-                    // marked as not received.
-                    packets.put(baseSeq, NEGATIVE_ONE);
+                    currentSeq = (currentSeq + 1) & 0xffff;
                 }
-                else
-                {
-                    // The spec is not clear about what the reference time for
-                    // each packet is. We assume that every packet for which
-                    // there is a delta updates the reference (even if the
-                    // delta is negative).
-                    // TODO: check what webrtc.org does
-                    referenceTime += delta;
-                    packets.put(baseSeq, referenceTime);
-                }
-
-                baseSeq = (baseSeq + 1) & 0xffff;
             }
 
             // next packet status chunk
-            pscOff += 2;
+            currentPscOff += CHUNK_SIZE_BYTES;
             packetsRemaining -= packetsInChunk;
         }
 
+        if (packetsRemaining > 0)
+        {
+            logger.warn(
+                "Reached the end of the buffer before having read all expected"
+                    + " packets. Ill-formatted RTCP packet?");
+        }
+
         return packets;
+    }
+
+    /**
+     * @return the type of a Packet Status Chunk contained in {@code buf} at
+     * offset {@code off}.
+     * @param buf the buffer which contains the Packet Status Chunk.
+     * @param off the offset in {@code buf} at which the Packet Status Chunk
+     */
+    private static int getChunkType(byte[] buf, int off)
+    {
+        return (buf[off] & 0x80) >> 7;
     }
 
     /**
@@ -242,9 +344,8 @@ public class RTCPTCCPacket
      * @param i the zero-based index of the symbol to return.
      * @return the {@code i}-th symbol from the given Packet Status Chunk.
      */
-    private static int readSymbol(byte[] buf, int off, int i)
+    private static int readSymbol(byte[] buf, int off, int chunkType, int i)
     {
-        int chunkType = (buf[off] & 0x80) >> 7;
         if (chunkType == CHUNK_TYPE_VECTOR)
         {
             int symbolType = (buf[off] & 0x40) >> 6;
@@ -324,7 +425,7 @@ public class RTCPTCCPacket
      */
     private static int getPacketCount(byte[] buf, int off)
     {
-        int chunkType = (buf[off] & 0x80) >> 7;
+        int chunkType = getChunkType(buf, off);
         if (chunkType == CHUNK_TYPE_VECTOR)
         {
             // A vector chunk looks like this:
@@ -351,7 +452,10 @@ public class RTCPTCCPacket
                 | (buf[off + 1] & 0xff);
         }
 
-        return -1;
+        // This should never happen.
+        throw new IllegalStateException(
+            "The one-bit chunk type is neither 0 nor 1. A superposition is "+
+                " not a valid chunk type.");
     }
 
     /**
@@ -420,6 +524,17 @@ public class RTCPTCCPacket
     private static final int MIN_FCI_LENGTH = 10;
 
     /**
+     * The size in bytes of a packet status chunk.
+     */
+    private static final int CHUNK_SIZE_BYTES = 2;
+
+    /**
+     * The offset of the first packet status chunk relative to the start of the
+     * FCI.
+     */
+    private static final int PACKET_STATUS_CHUNK_OFFSET = 8;
+
+    /**
      * An error message to use when parsing failed.
      */
     private static final String PARSE_ERROR
@@ -432,7 +547,7 @@ public class RTCPTCCPacket
     private PacketMap packets = null;
 
     /**
-     * Initializes a new <tt>NACKPacket</tt> instance.
+     * Initializes a new <tt>RTCPTCCPacket</tt> instance.
      * @param base
      */
     public RTCPTCCPacket(RTCPCompoundPacket base)
@@ -452,6 +567,8 @@ public class RTCPTCCPacket
      * missing (not received) packets.
      * @param fbPacketCount the index of this feedback packet, to be used in the
      * "fb pkt count" field.
+     * @param diagnosticContext the {@link DiagnosticContext} to use to print
+     * diagnostic information.
      *
      * Warning: The timestamps for the packets are expected to be in
      * millisecond increments, which is different than the output map produced
@@ -460,22 +577,29 @@ public class RTCPTCCPacket
      * Note: this implementation is not optimized and might not always use
      * the minimal possible number of bytes to describe a given set of packets.
      */
-    public RTCPTCCPacket(long senderSSRC, long sourceSSRC,
-                         PacketMap packets,
-                         byte fbPacketCount)
+    public RTCPTCCPacket(
+            long senderSSRC, long sourceSSRC, PacketMap packets,
+            byte fbPacketCount, DiagnosticContext diagnosticContext)
     {
         super(FMT, RTPFB, senderSSRC, sourceSSRC);
 
         Map.Entry<Integer, Long> first = packets.firstEntry();
         int firstSeq = first.getKey();
         Map.Entry<Integer, Long> last = packets.lastEntry();
-        int packetCount
-            = 1 + RTPUtils.sequenceNumberDiff(last.getKey(), firstSeq);
+        int packetCount = 1 + RTPUtils.subtractNumber(last.getKey(), firstSeq);
+
+        if (packetCount > MAX_PACKET_COUNT)
+        {
+            throw
+                new IllegalArgumentException("Too many packets: " + packetCount);
+        }
 
         // Temporary buffer to store the fixed fields (8 bytes) and the list of
         // packet status chunks (see the format above). The buffer may be longer
         // than needed. We pack 7 packets in a chunk, and a chunk is 2 bytes.
-        byte[] buf = new byte[(packetCount / 7 + 1) * 2 + 8];
+        byte[] buf = packetCount % 7 == 0
+            ? new byte[(packetCount / 7) * 2 + 8]
+            : new byte[(packetCount / 7 + 1) * 2 + 8];
         // Temporary buffer to store the list of deltas (see the format above).
         // We allocated for the worst case (2 bytes per packet), which may
         // be longer than needed.
@@ -493,9 +617,8 @@ public class RTCPTCCPacket
         off += RTPUtils.writeShort(buf, off, (short) packetCount);
 
         // Set the 'reference time' field
-        off +=
-            RTPUtils.writeUint24(buf, off,
-                                 (int) ((referenceTime >> 6) & 0xffffff));
+        off += RTPUtils.writeUint24(
+                buf, off, (int) ((referenceTime >> 6) & 0xffffff));
 
         // Set the 'fb pkt count' field. TODO increment
         buf[off++] = fbPacketCount;
@@ -539,7 +662,16 @@ public class RTCPTCCPacket
 
                     // The small delta is an 8-bit unsigned with a resolution of
                     // 250µs. Our deltas are all in milliseconds (hence << 2).
-                    deltas[deltaOff++] = (byte ) ((tsDelta << 2) & 0xff);
+                    deltas[deltaOff++] = (byte) ((tsDelta << 2) & 0xff);
+                    if (logger.isTraceEnabled())
+                    {
+                        logger.trace(diagnosticContext
+                                .makeTimeSeriesPoint("small_delta")
+                                .addField("seq", seq)
+                                .addField("arrival_time_ms", ts)
+                                .addField("ref_time_ms", nextReferenceTime)
+                                .addField("delta", tsDelta));
+                    }
                 }
                 else if (tsDelta < 8191 && tsDelta > -8192)
                 {
@@ -550,6 +682,15 @@ public class RTCPTCCPacket
                     short d = (short) (tsDelta << 2);
                     deltas[deltaOff++] = (byte) ((d >> 8) & 0xff);
                     deltas[deltaOff++] = (byte) ((d) & 0xff);
+                    if (logger.isTraceEnabled())
+                    {
+                        logger.trace(diagnosticContext
+                                .makeTimeSeriesPoint("large_delta")
+                                .addField("seq", seq)
+                                .addField("arrival_time_ms", ts)
+                                .addField("ref_time_ms", nextReferenceTime)
+                                .addField("delta", tsDelta));
+                    }
                 }
                 else
                 {
@@ -558,7 +699,8 @@ public class RTCPTCCPacket
                     // send feedback with such deltas, we should split it up
                     // into multiple RTCP packets. We can't do that here in the
                     // constructor.
-                    throw new IllegalArgumentException("Delta too big, needs new reference.");
+                    throw new IllegalArgumentException(
+                            "Delta too big, needs new reference.");
                 }
 
                 // If the packet was received, the next delta will be relative
@@ -570,43 +712,41 @@ public class RTCPTCCPacket
             // symbol (we've already set 'off' to point to the correct byte).
             //  0 1 2 3 4 5 6 7          8 9 0 1 2 3 4 5
             //  S T <0> <1> <2>          <3> <4> <5> <6>
-            int symbolOffset;
+            int symbolShift;
             switch (seqDelta % 7)
             {
             case 0:
             case 4:
-                symbolOffset = 4;
+                symbolShift = 4;
                 break;
             case 1:
             case 5:
-                symbolOffset = 2;
+                symbolShift = 2;
                 break;
             case 2:
             case 6:
-                symbolOffset = 0;
+                symbolShift = 0;
                 break;
             case 3:
             default:
-                symbolOffset = 6;
+                symbolShift = 6;
             }
 
-            symbol <<= symbolOffset;
+            symbol <<= symbolShift;
             buf[off] |= symbol;
         }
 
         off++;
-        if (packetCount % 7 <= 3)
+        if (packetCount % 7 > 0 && packetCount % 7 <= 3)
         {
             // the last chunk was not complete
             buf[off++] = 0;
         }
 
-
         fci = new byte[off + deltaOff];
         System.arraycopy(buf, 0, fci, 0, off);
         System.arraycopy(deltas, 0, fci, off, deltaOff);
     }
-
 
     /**
      * @return the map of packets represented by this {@link RTCPTCCPacket}.
@@ -614,13 +754,15 @@ public class RTCPTCCPacket
      * Warning: the timestamps are represented in the 250µs format used by the
      * on-the-wire format, and don't represent local time. This is different
      * than the timestamps expected as input when constructing a packet with
-     * {@link RTCPTCCPacket#RTCPTCCPacket(long, long, PacketMap, byte)}.
+     * {@link RTCPTCCPacket#RTCPTCCPacket(long, long, PacketMap, byte,
+     * DiagnosticContext)}.
      */
     synchronized public PacketMap getPackets()
     {
         if (packets == null)
         {
-            packets = getPacketsFci(new ByteArrayBufferImpl(fci, 0, fci.length));
+            packets
+                = getPacketsFromFci(new ByteArrayBufferImpl(fci, 0, fci.length));
         }
 
         return packets;
@@ -639,6 +781,23 @@ public class RTCPTCCPacket
     public String toString()
     {
         return "RTCP transport-cc feedback";
+    }
+
+    /**
+     * Logs a message message about a packet in debug level (if debug logging
+     * is enabled).
+     */
+    private static void logPacket(
+        int seq, long referenceTime, int delta, int symbol)
+    {
+        if (logger.isDebugEnabled())
+        {
+            logger.debug(
+                "seq=" + seq
+                    + ",reference_time=" + referenceTime
+                    + ",delta=" + delta
+                    + ",symbol=" + symbol);
+        }
     }
 
     /**
