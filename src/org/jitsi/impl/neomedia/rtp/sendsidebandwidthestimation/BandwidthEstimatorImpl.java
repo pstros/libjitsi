@@ -16,11 +16,14 @@
 package org.jitsi.impl.neomedia.rtp.sendsidebandwidthestimation;
 
 import net.sf.fmj.media.rtp.*;
+import org.jitsi.service.configuration.*;
+import org.jitsi.service.libjitsi.*;
+import org.jitsi.impl.neomedia.*;
 import org.jitsi.service.neomedia.*;
 import org.jitsi.service.neomedia.rtp.*;
-import org.jitsi.util.concurrent.*;
 
 import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * Implements part of the send-side bandwidth estimation described in
@@ -29,16 +32,19 @@ import java.util.*;
  * 7ad9e661f8a035d49d049ccdb87c77ae8ecdfa35).
  *
  * @author Boris Grozev
+ * @author George Politis
  */
 public class BandwidthEstimatorImpl
     extends RTCPReportAdapter
-    implements BandwidthEstimator, RecurringProcessible
+    implements BandwidthEstimator
 {
     /**
-     * The interval at which {@link #process()} should be called, in
-     * milliseconds.
+     * The system property name of the initial value of the estimation, in bits
+     * per second.
      */
-    private static final int PROCESS_INTERVAL_MS = 25;
+    public static final String START_BITRATE_BPS_PNAME = "org.jitsi.impl" +
+        ".neomedia.rtp.sendsidebandwidthestimation.BandwidthEstimatorImpl" +
+        ".START_BITRATE_BPS";
 
     /**
      * The minimum value to be output by this estimator, in bits per second.
@@ -51,15 +57,22 @@ public class BandwidthEstimatorImpl
     private final static int MAX_BITRATE_BPS = 20 * 1000 * 1000;
 
     /**
-     * The initial value of the estimation, in bits per secod.
+     * The ConfigurationService to get config values from.
      */
-    private static final int START_BITRATE_BPS = 300000;
+    private static final ConfigurationService cfg
+        = LibJitsi.getConfigurationService();
+
+    /**
+     * The initial value of the estimation, in bits per second.
+     */
+    private static final long START_BITRATE_BPS
+        = cfg != null ? cfg.getLong(START_BITRATE_BPS_PNAME, 300000) : 300000;
 
     /**
      * bitrate_controller_impl.h
      */
     private Map<Long,Long> ssrc_to_last_received_extended_high_seq_num_
-        = new HashMap<>();
+        = new ConcurrentHashMap<>();
 
     private long lastUpdateTime = -1;
 
@@ -69,18 +82,12 @@ public class BandwidthEstimatorImpl
     private final SendSideBandwidthEstimation sendSideBandwidthEstimation;
 
     /**
-     * The {@link MediaStream} which owns this instance.
-     */
-    private final MediaStream mediaStream;
-
-    /**
      * Initializes a new instance which is to belong to a particular
      * {@link MediaStream}.
      * @param stream the {@link MediaStream}.
      */
-    public BandwidthEstimatorImpl(MediaStream stream)
+    public BandwidthEstimatorImpl(MediaStreamImpl stream)
     {
-        mediaStream = stream;
         sendSideBandwidthEstimation
             = new SendSideBandwidthEstimation(stream, START_BITRATE_BPS);
         sendSideBandwidthEstimation.setMinMaxBitrate(
@@ -88,7 +95,7 @@ public class BandwidthEstimatorImpl
 
         // Hook us up to receive Report Blocks and REMBs.
         MediaStreamStats stats = stream.getMediaStreamStats();
-        stats.addRembListener(sendSideBandwidthEstimation);
+        stats.addRTCPPacketListener(sendSideBandwidthEstimation);
         stats.getRTCPReports().addRTCPReportListener(this);
     }
 
@@ -122,7 +129,6 @@ public class BandwidthEstimatorImpl
             if (lastEHSN == null)
             {
                 lastEHSN = extSeqNum;
-                continue;
             }
 
             ssrc_to_last_received_extended_high_seq_num_.put(ssrc, extSeqNum);
@@ -180,26 +186,35 @@ public class BandwidthEstimatorImpl
      * {@inheritDoc}
      */
     @Override
-    public long getTimeUntilNextProcess()
+    public long getLatestEstimate()
     {
-        return
-                (lastUpdateTime < 0L)
-                        ? 0L
-                        : lastUpdateTime + PROCESS_INTERVAL_MS
-                            - System.currentTimeMillis();
+        return sendSideBandwidthEstimation.getLatestEstimate();
     }
 
     /**
      * {@inheritDoc}
      */
     @Override
-    public long process()
+    public long getLatestREMB()
     {
-        synchronized (sendSideBandwidthEstimation)
-        {
-            lastUpdateTime = System.currentTimeMillis();
-            sendSideBandwidthEstimation.updateEstimate(lastUpdateTime);
-        }
-        return 0;
+        return sendSideBandwidthEstimation.getLatestREMB();
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void updateReceiverEstimate(long bandwidth)
+    {
+        sendSideBandwidthEstimation.updateReceiverEstimate(bandwidth);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public int getLatestFractionLoss()
+    {
+        return sendSideBandwidthEstimation.getLatestFractionLoss();
     }
 }

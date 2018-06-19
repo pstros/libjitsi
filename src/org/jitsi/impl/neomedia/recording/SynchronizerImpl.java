@@ -15,11 +15,12 @@
  */
 package org.jitsi.impl.neomedia.recording;
 
-import org.jitsi.impl.neomedia.*;
+import org.jitsi.service.neomedia.*;
 import org.jitsi.service.neomedia.recording.*;
 import org.jitsi.util.*;
 
 import java.util.*;
+import java.util.concurrent.*;
 
 /**
  * @author Boris Grozev
@@ -51,13 +52,13 @@ public class SynchronizerImpl
      * Maps an SSRC to the <tt>SSRCDesc</tt> structure containing information
      * about it.
      */
-    private Map<Long, SSRCDesc> ssrcs = new HashMap<Long, SSRCDesc>();
+    private final Map<Long, SSRCDesc> ssrcs = new ConcurrentHashMap<>();
 
     /**
      * Maps an endpoint identifier to an <tt>Endpoint</tt> structure containing
      * information about the endpoint.
      */
-    private Map<String, Endpoint> endpoints = new HashMap<String, Endpoint>();
+    private final Map<String, Endpoint> endpoints = new ConcurrentHashMap<>();
 
     /**
      * {@inheritDoc}
@@ -203,7 +204,7 @@ public class SynchronizerImpl
         long local0;
 
         double diff1S = ntp1 - ntp2;
-        double diff2S = ((double)TimeUtils.rtpDiff(rtp0, rtp1)) / clockRate;
+        double diff2S = ((double)RTPUtils.rtpTimestampDiff(rtp0, rtp1)) / clockRate;
 
         long diffMs = Math.round((diff1S + diff2S) * 1000);
 
@@ -276,11 +277,11 @@ public class SynchronizerImpl
      */
     private void addSR(RawPacket pkt, long localTime)
     {
-        long ssrc = pkt.getRTCPSSRCAsLong();
-        long rtpTime = pkt.readUnsignedIntAsLong(16);
+        long ssrc = pkt.getRTCPSSRC();
+        long rtpTime = pkt.readUint32AsLong(16);
 
-        long sec = pkt.readUnsignedIntAsLong(8);
-        long fract = pkt.readUnsignedIntAsLong(12);
+        long sec = pkt.readUint32AsLong(8);
+        long fract = pkt.readUint32AsLong(12);
         double ntpTime = sec + (((double)fract) / (1L<<32));
 
         if (localTime != -1 && ntpTime != -1.0)
@@ -299,20 +300,16 @@ public class SynchronizerImpl
      */
     private SSRCDesc getSSRCDesc(long ssrc)
     {
-        SSRCDesc ssrcDesc = ssrcs.get(ssrc);
-        if (ssrcDesc == null)
+        synchronized (ssrcs)
         {
-            synchronized (ssrcs)
+            SSRCDesc ssrcDesc = ssrcs.get(ssrc);
+            if (ssrcDesc == null)
             {
-                ssrcDesc = ssrcs.get(ssrc);
-                if (ssrcDesc == null)
-                {
-                    ssrcDesc = new SSRCDesc();
-                    ssrcs.put(ssrc, ssrcDesc);
-                }
+                ssrcDesc = new SSRCDesc();
+                ssrcs.put(ssrc, ssrcDesc);
             }
+            return ssrcDesc;
         }
-        return ssrcDesc;
     }
 
     /**
@@ -324,33 +321,28 @@ public class SynchronizerImpl
      */
     private Endpoint getEndpoint(String endpointId)
     {
-        Endpoint endpoint = endpoints.get(endpointId);
-        if (endpoint == null)
+        synchronized (endpoints)
         {
-            synchronized (endpoints)
+            Endpoint endpoint = endpoints.get(endpointId);
+            if (endpoint == null)
             {
-                endpoint = endpoints.get(endpointId);
-                if (endpoint == null)
-                {
-                    endpoint = new Endpoint();
-                    endpoints.put(endpointId, endpoint);
-                }
+                endpoint = new Endpoint();
+                endpoints.put(endpointId, endpoint);
             }
+            return endpoint;
         }
-
-        return endpoint;
     }
 
     /**
      * Return a set of all items with type CNAME from the RTCP SDES packet
      * <tt>pkt</tt>.
      * @param pkt the packet to parse for CNAME items.
-     * @retur a set of all items with type CNAME from the RTCP SDES packet
+     * @return a set of all items with type CNAME from the RTCP SDES packet
      * <tt>pkt</tt>.
      */
     private Set<CNAMEItem> getCnameItems(RawPacket pkt)
     {
-        Set<CNAMEItem> ret = new HashSet<CNAMEItem>();
+        Set<CNAMEItem> ret = new HashSet<>();
 
         byte[] buf = pkt.getBuffer();
         int off = pkt.getOffset();
@@ -457,19 +449,13 @@ public class SynchronizerImpl
      */
     void removeMapping(long ssrc)
     {
-        if (ssrcs.containsKey(ssrc))
+        SSRCDesc ssrcDesc = ssrcs.get(ssrc);
+        if (ssrcDesc != null)
         {
-            synchronized (ssrcs)
+            synchronized (ssrcDesc)
             {
-                SSRCDesc ssrcDesc = ssrcs.get(ssrc);
-                if (ssrcDesc != null)
-                {
-                    synchronized (ssrcDesc)
-                    {
-                        ssrcDesc.ntpTime = -1.0;
-                        ssrcDesc.rtpTime = -1;
-                    }
-                }
+                ssrcDesc.ntpTime = -1.0;
+                ssrcDesc.rtpTime = -1;
             }
         }
     }
@@ -497,7 +483,7 @@ public class SynchronizerImpl
     /**
      * A class used to identify an "endpoint" or "source". Contains a mapping
      * between a wallclock at the endpoint and a time we chose on the local
-     * system clock to correcpond to it.
+     * system clock to correspond to it.
      */
     private static class Endpoint
     {

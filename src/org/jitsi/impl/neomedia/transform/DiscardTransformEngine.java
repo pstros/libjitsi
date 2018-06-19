@@ -16,8 +16,6 @@
 package org.jitsi.impl.neomedia.transform;
 
 import net.sf.fmj.media.rtp.*;
-import org.jitsi.impl.neomedia.*;
-import org.jitsi.impl.neomedia.rtcp.*;
 import org.jitsi.impl.neomedia.rtp.*;
 import org.jitsi.service.neomedia.*;
 import org.jitsi.util.*;
@@ -87,11 +85,15 @@ public class DiscardTransformEngine
                 = (pkt.getFlags() & Buffer.FLAG_DISCARD) == Buffer.FLAG_DISCARD;
 
             long ssrc = pkt.getSSRCAsLong();
-            ResumableStreamRewriter rewriter = ssrcToRewriter.get(ssrc);
-            if (rewriter == null)
+            ResumableStreamRewriter rewriter;
+            synchronized (ssrcToRewriter)
             {
-                rewriter = new ResumableStreamRewriter();
-                ssrcToRewriter.put(ssrc, rewriter);
+                rewriter = ssrcToRewriter.get(ssrc);
+                if (rewriter == null)
+                {
+                    rewriter = new ResumableStreamRewriter();
+                    ssrcToRewriter.put(ssrc, rewriter);
+                }
             }
 
             rewriter.rewriteRTP(
@@ -110,7 +112,7 @@ public class DiscardTransformEngine
     };
 
     /**
-     * The {@link PacketTransformer} for RTP packets.
+     * The {@link PacketTransformer} for RTCP packets.
      */
     private final PacketTransformer rtcpTransformer
         = new SinglePacketTransformerAdapter()
@@ -136,20 +138,23 @@ public class DiscardTransformEngine
 
             // Check RTCP packet validity. This makes sure that pktLen > 0
             // so this loop will eventually terminate.
-            if (!RTCPHeaderUtils.isValid(buf, offset, length))
+            if (!RTCPUtils.isHeaderValid(buf, offset, length))
             {
                 return pkt;
             }
 
-            int pktLen = RTCPHeaderUtils.getLength(buf, offset, length);
+            int pktLen = RTCPUtils.getLength(buf, offset, length);
 
-            int pt = RTCPHeaderUtils.getPacketType(buf, offset, pktLen);
+            int pt = RTCPUtils.getPacketType(buf, offset, pktLen);
             if (pt == RTCPPacket.SR)
             {
-                long ssrc
-                    = RTCPHeaderUtils.getSenderSSRC(buf, offset, pktLen);
+                long ssrc = RawPacket.getRTCPSSRC(buf, offset, pktLen);
 
-                ResumableStreamRewriter rewriter = ssrcToRewriter.get(ssrc);
+                ResumableStreamRewriter rewriter;
+                synchronized (ssrcToRewriter)
+                {
+                    rewriter = ssrcToRewriter.get(ssrc);
+                }
 
                 if (rewriter != null)
                 {

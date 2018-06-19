@@ -2,7 +2,7 @@
 
 ##### net.java.sip.communicator.service.media.DISABLE\_AUDIO\_SUPPORT=*boolean*
 
-Indicates whether the detection of audio CaptureDevices is to be disabled. The default value is false i.e. the audio CaptureDevices are detected.
+Indicates whether the detection of audio CaptureDevices is to be disabled. The default value is false i.e. the detection of the audio CaptureDevices is enabled.
 
 ##### net.java.sip.communicator.impl.neomedia.audiosystem.DISABLED=*boolean*
 
@@ -10,7 +10,7 @@ Indicates whether the method DeviceConfiguration#setAudioSystem(AudioSystem, boo
 
 ##### net.java.sip.communicator.service.media.DISABLE\_VIDEO\_SUPPORT=*boolean*
 
-Indicates whether the detection of video CaptureDevices is to be disabled. The default value is false i.e. the video CaptureDevices are detected.
+Indicates whether the detection of video CaptureDevices is to be disabled. The default value is false i.e. the detection of the video CaptureDevices is enabled.
 
 ##### net.java.sip.communicator.impl.neomedia.dynamicPayloadTypePreferences
 
@@ -78,11 +78,11 @@ Indicates whether protection against replay attacks is to be activated. The defa
 
 # FECReceiver
 
-##### org.jitsi.impl.neomedia.transform.fec.FECReceiver.FEC\_BUFF\_SIZE=*int*
+##### org.jitsi.impl.neomedia.transform.fec.AbstractFECReceiver.FEC\_BUFF\_SIZE=*int*
 
 Specifies the value of #FEC\_BUFF\_SIZE.
 
-##### org.jitsi.impl.neomedia.transform.fec.FECReceiver.MEDIA\_BUFF\_SIZE=*int*
+##### org.jitsi.impl.neomedia.transform.fec.AbstractFECReceiver.MEDIA\_BUFF\_SIZE=*int*
 
 Specifies the value of #MEDIA\_BUFF\_SIZE.
 

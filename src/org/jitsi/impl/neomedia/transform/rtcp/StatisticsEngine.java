@@ -23,12 +23,10 @@ import javax.media.rtp.*;
 
 import net.sf.fmj.media.rtp.*;
 import net.sf.fmj.media.rtp.util.*;
-import net.sf.fmj.utility.*;
 
 import org.jitsi.impl.neomedia.*;
 import org.jitsi.impl.neomedia.device.*;
 import org.jitsi.impl.neomedia.rtcp.*;
-import org.jitsi.impl.neomedia.rtp.translator.*;
 import org.jitsi.impl.neomedia.stats.*;
 import org.jitsi.impl.neomedia.transform.*;
 import org.jitsi.service.neomedia.*;
@@ -37,7 +35,6 @@ import org.jitsi.service.neomedia.control.*;
 import org.jitsi.service.neomedia.format.*;
 import org.jitsi.service.neomedia.rtp.*;
 import org.jitsi.util.*;
-import org.jitsi.util.function.*;
 
 /**
  * Implements a <tt>TransformEngine</tt> monitors the incoming and outgoing RTCP
@@ -81,39 +78,16 @@ public class StatisticsEngine
      */
     private static int getLengthIfRTCP(byte[] buf, int off, int len)
     {
-        if ((off >= 0)
-                && (len >= 4)
-                && (buf != null)
-                && (buf.length >= (off + len)))
+        if (off >= 0 && RTCPUtils.isRtcp(buf, off, len))
         {
-            int v = (buf[off] & 0xc0) >>> 6;
+            int bytes = RTCPUtils.getLength(buf, off, len);
 
-            if (v == RTCPHeader.VERSION)
+            if (bytes <= len)
             {
-                int words
-                    = ((buf[off + 2] & 0xff) << 8) | (buf[off + 3] & 0xff);
-                int bytes = (words + 1) * 4;
-
-                if (bytes <= len)
-                    return bytes;
+                return bytes;
             }
         }
         return -1;
-    }
-
-    /**
-     * Determines whether a specific <tt>RawPacket</tt> appears to represent an
-     * RTCP packet.
-     *
-     * @param pkt the <tt>RawPacket</tt> to be examined
-     * @return <tt>true</tt> if the specified <tt>pkt</tt> appears to represent
-     * an RTCP packet
-     */
-    private static boolean isRTCP(RawPacket pkt)
-    {
-        return
-            getLengthIfRTCP(pkt.getBuffer(), pkt.getOffset(), pkt.getLength())
-                > 0;
     }
 
     /**
@@ -156,12 +130,6 @@ public class StatisticsEngine
      * RTCP packets.
      */
     private final RTCPPacketParserEx parser = new RTCPPacketParserEx();
-
-    /**
-     * The <tt>Function</tt> that generates <tt>RawPacket</tt>s from
-     * <tt>RTCPCompoundPacket</tt>s.
-     */
-    private RTCPGenerator generator = new RTCPGenerator();
 
     /**
      * The <tt>PacketTransformer</tt> instance to use for RTP.
@@ -236,7 +204,7 @@ public class StatisticsEngine
                             i < sc;
                             ++i, ssrcOff += 4)
                     {
-                        if (RTPTranslatorImpl.readInt(buf, ssrcOff)
+                        if (RTPUtils.readInt(buf, ssrcOff)
                                 == extendedReport.getSSRC())
                         {
                             before = true;
@@ -361,7 +329,7 @@ public class StatisticsEngine
                         break;
                     }
 
-                    int senderSSRC = RTPTranslatorImpl.readInt(buf, off + 4);
+                    int senderSSRC = RTPUtils.readInt(buf, off + 4);
                     // Collect the SSRCs of the RTP data packet sources being
                     // reported upon by the RTCP RR/SR packet because they may
                     // be of concern to the RTCP XR packet (e.g. VoIP Metrics
@@ -371,9 +339,7 @@ public class StatisticsEngine
                     for (int i = 0; i < rc; i++)
                     {
                         sourceSSRCs[i]
-                            = RTPTranslatorImpl.readInt(
-                                    buf,
-                                    receptionReportBlockOff);
+                            = RTPUtils.readInt(buf, receptionReportBlockOff);
                         receptionReportBlockOff += 6 * 4;
                     }
 
@@ -890,10 +856,10 @@ public class StatisticsEngine
     public RawPacket reverseTransform(RawPacket pkt)
     {
         // SRTP may send non-RTCP packets.
-        if (isRTCP(pkt))
+        if (RTCPUtils.isRtcp(pkt.getBuffer(), pkt.getOffset(), pkt.getLength()))
         {
             mediaStreamStats.rtcpPacketReceived(
-                pkt.getRTCPSSRCAsLong(), pkt.getLength());
+                pkt.getRTCPSSRC(), pkt.getLength());
 
             RTCPCompoundPacket compound;
             Exception ex;
@@ -908,10 +874,13 @@ public class StatisticsEngine
                                 pkt.getLength());
                 ex = null;
             }
-            catch (BadFormatException bfe)
+            catch (BadFormatException | IllegalStateException e)
             {
+                // In some parsing failures, FMJ swallows the original
+                // IOException and throws a runtime IllegalStateException.
+                // Handle it as if parsing failed.
                 compound = null;
-                ex = bfe;
+                ex = e;
             }
 
             if (compound == null
@@ -919,23 +888,22 @@ public class StatisticsEngine
                     || compound.packets.length == 0)
             {
                 logger.info(
-                        "Failed to analyze an incoming RTCP packet for the"
-                            + " purposes of statistics.",
-                        ex);
-                return pkt;
-            }
+                    "Failed to parse an incoming RTCP packet: " +
+                        (ex == null ? "null" : ex.getMessage()));
 
-            List<RTCPPacket> out = new LinkedList<>();
-            boolean modified;
+                // Either this is an empty packet, or parsing failed. In any
+                // case, drop the packet to make sure we're not forwarding
+                // broken RTCP (we've observed Chrome 49 sending SRs with an
+                // incorrect 'rc' field).
+                return null;
+            }
 
             try
             {
-                modified
-                    = updateReceivedMediaStreamStats(compound.packets, out);
+                updateReceivedMediaStreamStats(compound.packets);
             }
             catch (Throwable t)
             {
-                modified = false;
                 if (t instanceof InterruptedException)
                 {
                     Thread.currentThread().interrupt();
@@ -952,23 +920,6 @@ public class StatisticsEngine
                             t);
                 }
             }
-
-            if (!modified)
-            {
-                return pkt; // no change was introduced
-            }
-            else if (out.isEmpty())
-            {
-                return null; // all RTCP packets were consumed
-            }
-            else
-            {
-                RTCPCompoundPacket outPacket
-                    = new RTCPCompoundPacket(
-                            out.toArray(new RTCPPacket[out.size()]));
-
-                pkt = generator.apply(outPacket);
-            }
         }
 
         return pkt;
@@ -978,15 +929,11 @@ public class StatisticsEngine
      * Processes the {@link RTCPPacket}s from {@code in} as received RTCP
      * packets and updates the {@link MediaStreamStats}. Adds to {@code out} the
      * ones which were not consumed and should be output from this instance.
-     * @param in the input packets
-     * @param out the list to which non-consumed packets will be added.
-     * @return {@code true} iff some packets were consumed.
+     * @param in the array of received RTCP packets
      */
-    private boolean updateReceivedMediaStreamStats(
-            RTCPPacket[] in,
-            List<RTCPPacket> out)
+    private void updateReceivedMediaStreamStats(
+            RTCPPacket[] in)
     {
-        boolean removed = false;
         MediaStreamStatsImpl streamStats = mediaStream.getMediaStreamStats();
 
         for (RTCPPacket rtcp : in)
@@ -1000,18 +947,21 @@ public class StatisticsEngine
 
                     if (logger.isTraceEnabled())
                     {
-                        logger.trace(
-                                "Received estimated bitrate (bps): "
-                                        + remb.getBitrate() + ", dest: "
-                                        + Arrays.toString(remb.getDest()));
+                        logger.trace("remb_received,stream="
+                            + mediaStream.hashCode() + " bps="
+                            + remb.getBitrate() + ",dest="
+                            + Arrays.toString(remb.getDest()));
                     }
                     streamStats.rembReceived(remb);
-                    out.add(rtcp);
                 }
                 break;
 
-            case RTCPPacket.RR:
             case RTCPPacket.SR:
+                if (rtcp instanceof RTCPSRPacket)
+                {
+                    streamStats.srReceived((RTCPSRPacket) rtcp);
+                }
+            case RTCPPacket.RR:
                 {
                 RTCPReport report;
 
@@ -1035,22 +985,21 @@ public class StatisticsEngine
                     streamStats.getRTCPReports().rtcpReportReceived(report);
                 }
 
-                out.add(rtcp);
                 }
                 break;
 
             case RTCPFBPacket.RTPFB:
                 if (rtcp instanceof NACKPacket)
                 {
+                    // NACKs are currently handled in RtxTransformer and do not
+                    // reach the StatisticsEngine.
                     NACKPacket nack = (NACKPacket) rtcp;
 
                     streamStats.nackReceived(nack);
-
-                    // Note that we drop NACK packets here, and leave it as a
-                    // responsibility of the user application to handle them, if
-                    // necessary (i.e. forward the NACK packet somewhere, or
-                    // retransmit RTP packets).
-                    removed = true;
+                }
+                else if (rtcp instanceof RTCPTCCPacket)
+                {
+                    streamStats.tccPacketReceived((RTCPTCCPacket)rtcp);
                 }
                 break;
 
@@ -1058,12 +1007,7 @@ public class StatisticsEngine
                 if (rtcp instanceof RTCPExtendedReport)
                 {
                     streamStats.getRTCPReports().rtcpExtendedReportReceived(
-                            (RTCPExtendedReport) rtcp);
-
-                    // Remove any RTP Control Protocol Extended Report (RTCP XR)
-                    // packets because neither FMJ, nor
-                    // RTCPSenderReport/RTCPReceiverReport understands them.
-                    removed = true;
+                        (RTCPExtendedReport) rtcp);
                 }
                 break;
 
@@ -1072,8 +1016,6 @@ public class StatisticsEngine
                 break;
             }
         }
-
-        return removed;
     }
 
     /**
@@ -1089,9 +1031,9 @@ public class StatisticsEngine
     public RawPacket transform(RawPacket pkt)
     {
         // SRTP may send non-RTCP packets.
-        if (isRTCP(pkt))
+        if (RTCPUtils.isRtcp(pkt.getBuffer(), pkt.getOffset(), pkt.getLength()))
         {
-            mediaStreamStats.rtcpPacketSent(pkt.getRTCPSSRCAsLong(),
+            mediaStreamStats.rtcpPacketSent(pkt.getRTCPSSRC(),
                                             pkt.getLength());
             try
             {
@@ -1233,19 +1175,23 @@ public class StatisticsEngine
      * Computes the sum of the values of a specific {@code Map} with
      * {@code Long} values.
      *
-     * @param map the {@code Map} with {@code Long} values to sum up
+     * @param map the {@code Map} with {@code Long} values to sum up. Note that
+     * we synchronize on this object!
      * @return the sum of the values of the specified {@code map}
      */
     private static long getCumulativeValue(Map<?,Long> map)
     {
         long cumulativeValue = 0;
 
-        for (Long value : map.values())
+        synchronized (map)
         {
-            if(value == null)
-                continue;
+            for (Long value : map.values())
+            {
+                if (value == null)
+                    continue;
 
-            cumulativeValue += value;
+                cumulativeValue += value;
+            }
         }
         return cumulativeValue;
     }
@@ -1253,22 +1199,27 @@ public class StatisticsEngine
     /**
      * Utility method to return a value from a map and perform unboxing only if
      * the result value is not null.
-     * @param map the map to get the value
+     * @param map the map to get the value. Note that we synchronize on that
+     * object!
      * @param ssrc the key
      * @return the result value or 0 if nothing is found.
      */
     private static long getMapValue(Map<?,Long> map, long ssrc)
     {
-        // there can be no entry, or the value can be null
-        Long res = map.get(ssrc);
-        return res == null ? 0 : res;
+        synchronized (map)
+        {
+            // there can be no entry, or the value can be null
+            Long res = map.get(ssrc);
+            return res == null ? 0 : res;
+        }
     }
 
     /**
      * Utility method to increment map value with specified step. If entry is
      * missing add it.
      *
-     * @param map the map holding the values
+     * @param map the map holding the values. Note that we synchronize on that
+     * object!
      * @param ssrc the key of the value to increment
      * @param step increment step value
      */
@@ -1277,9 +1228,12 @@ public class StatisticsEngine
             long ssrc,
             long step)
     {
-        Long count = map.get(ssrc);
+        synchronized(map)
+        {
+            Long count = map.get(ssrc);
 
-        map.put(ssrc, (count == null) ? step : (count + step));
+            map.put(ssrc, (count == null) ? step : (count + step));
+        }
     }
 
     private class RTPPacketTransformer

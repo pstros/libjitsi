@@ -21,18 +21,18 @@ import net.sf.fmj.media.rtp.util.*;
 
 import org.ice4j.util.*;
 import org.jitsi.service.neomedia.rtp.*;
-import org.jitsi.util.concurrent.*;
+import org.jitsi.util.*;
+import org.jetbrains.annotations.*;
 
 /**
  * webrtc/modules/remote_bitrate_estimator/remote_bitrate_estimator_single_stream.cc
  * webrtc/modules/remote_bitrate_estimator/remote_bitrate_estimator_single_stream.h
  *
  * @author Lyubomir Marinov
+ * @author George Politis
  */
 public class RemoteBitrateEstimatorSingleStream
-    implements CallStatsObserver,
-               RecurringProcessible,
-               RemoteBitrateEstimator
+    implements RemoteBitrateEstimator
 {
     static final double kTimestampToMs = 1.0 / 90.0;
 
@@ -62,11 +62,11 @@ public class RemoteBitrateEstimatorSingleStream
 
     private final RemoteBitrateObserver observer;
 
-    private final Map<Integer,Detector> overuseDetectors = new HashMap<>();
+    private final Map<Long,Detector> overuseDetectors = new HashMap<>();
 
     private long processIntervalMs = kProcessIntervalMs;
 
-    private final AimdRateControl remoteRate = new AimdRateControl();
+    private final AimdRateControl remoteRate;
 
     /**
      * The set of synchronization source identifiers (SSRCs) currently being
@@ -75,11 +75,17 @@ public class RemoteBitrateEstimatorSingleStream
      * the purposes of reducing the number of allocations and the effects of
      * garbage collection.
      */
-    private Collection<Integer> ssrcs;
+    private Collection<Long> ssrcs;
 
-    public RemoteBitrateEstimatorSingleStream(RemoteBitrateObserver observer)
+    private final DiagnosticContext diagnosticContext;
+
+    public RemoteBitrateEstimatorSingleStream(
+            RemoteBitrateObserver observer,
+            @NotNull DiagnosticContext diagnosticContext)
     {
         this.observer = observer;
+        this.diagnosticContext = diagnosticContext;
+        this.remoteRate = new AimdRateControl(diagnosticContext);
     }
 
     private long getExtensionTransmissionTimeOffset(RTPPacket header)
@@ -114,7 +120,7 @@ public class RemoteBitrateEstimatorSingleStream
     }
 
     @Override
-    public Collection<Integer> getSsrcs()
+    public Collection<Long> getSsrcs()
     {
         synchronized (critSect)
         {
@@ -129,35 +135,17 @@ public class RemoteBitrateEstimatorSingleStream
     }
 
     /**
-     * {@inheritDoc}
+     * Notifies this instance of an incoming packet.
+     *
+     * @param arrivalTimeMs the arrival time of the packet in millis.
+     * @param timestamp the RTP timestamp of the packet (RFC3550).
+     * @param payloadSize the payload size of the packet.
+     * @param ssrc_ the SSRC of the packet.
      */
     @Override
-    public long getTimeUntilNextProcess()
+    public void incomingPacketInfo(
+        long arrivalTimeMs, long timestamp, int payloadSize, long ssrc_)
     {
-        if (lastProcessTime < 0L)
-            return 0L;
-
-        synchronized (critSect)
-        {
-            return
-                lastProcessTime
-                    + processIntervalMs
-                    - System.currentTimeMillis();
-        }
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public void incomingPacket(
-            long arrivalTimeMs,
-            int payloadSize,
-            int ssrc,
-            long rtpTimestamp,
-            boolean wasPaced)
-    {
-        Integer ssrc_ = ssrc;
         long nowMs = System.currentTimeMillis();
 
         synchronized (critSect)
@@ -194,8 +182,8 @@ public class RemoteBitrateEstimatorSingleStream
         /* int sizeDelta */ deltas[2] = 0;
 
         if (estimator.interArrival.computeDeltas(
-                rtpTimestamp,
-                arrivalTimeMs,
+                timestamp,
+                nowMs,
                 payloadSize,
                 deltas))
         {
@@ -206,14 +194,21 @@ public class RemoteBitrateEstimatorSingleStream
                     /* timeDelta */ deltas[1],
                     timestampDeltaMs,
                     /* sizeDelta */ (int) deltas[2],
-                    estimator.detector.getState());
+                    estimator.detector.getState(), nowMs);
             estimator.detector.detect(
                     estimator.estimator.getOffset(),
                     timestampDeltaMs,
                     estimator.estimator.getNumOfDeltas(),
                     nowMs);
         }
-        if (estimator.detector.getState() == BandwidthUsage.kBwOverusing)
+
+        boolean updateEstimate = false;
+        if (lastProcessTime < 0L
+            || lastProcessTime + processIntervalMs - nowMs <= 0L)
+        {
+            updateEstimate = true;
+        }
+        else if (estimator.detector.getState() == BandwidthUsage.kBwOverusing)
         {
             long incomingBitrateBps = this.incomingBitrate.getRate(nowMs);
 
@@ -226,31 +221,16 @@ public class RemoteBitrateEstimatorSingleStream
                 // We also have to update the estimate immediately if we are
                 // overusing and the target bitrate is too high compared to what
                 // we are receiving.
-                updateEstimate(nowMs);
+                updateEstimate = true;
             }
         }
+
+        if (updateEstimate)
+        {
+            updateEstimate(nowMs);
+            lastProcessTime = nowMs;
+        }
         } // synchronized (critSect)
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    public void incomingPacket(
-            long arrivalTimeMs,
-            int payloadSize,
-            RTPPacket header,
-            boolean wasPaced)
-    {
-        int ssrc = header.ssrc;
-        long rtpTimestamp
-            = header.timestamp + getExtensionTransmissionTimeOffset(header);
-
-        incomingPacket(
-                arrivalTimeMs,
-                payloadSize,
-                ssrc, rtpTimestamp,
-                wasPaced);
     }
 
     /**
@@ -266,28 +246,10 @@ public class RemoteBitrateEstimatorSingleStream
     }
 
     /**
-     * Triggers a new estimate calculation.
-     *
-     * @return
-     */
-    @Override
-    public long process()
-    {
-        if (getTimeUntilNextProcess() <= 0L)
-        {
-            long nowMs = System.currentTimeMillis();
-
-            updateEstimate(nowMs);
-            lastProcessTime = nowMs;
-        }
-        return 0L;
-    }
-
-    /**
      * {@inheritDoc}
      */
     @Override
-    public void removeStream(int ssrc)
+    public void removeStream(long ssrc)
     {
         synchronized (critSect)
         {
@@ -376,7 +338,7 @@ public class RemoteBitrateEstimatorSingleStream
         } // synchronized (critSect)
     }
 
-    private static class Detector
+    private class Detector
     {
         public OveruseDetector detector;
 
@@ -396,9 +358,11 @@ public class RemoteBitrateEstimatorSingleStream
                 = new InterArrival(
                         90 * kTimestampGroupLengthMs,
                         kTimestampToMs,
-                        enableBurstGrouping);
-            this.estimator = new OveruseEstimator(options);
-            this.detector = new OveruseDetector(options);
+                        enableBurstGrouping,
+                        diagnosticContext);
+
+            this.estimator = new OveruseEstimator(options, diagnosticContext);
+            this.detector = new OveruseDetector(options, diagnosticContext);
         }
     }
 }

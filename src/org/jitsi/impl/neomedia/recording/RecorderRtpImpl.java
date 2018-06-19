@@ -1269,7 +1269,8 @@ public class RecorderRtpImpl
                                     packetBuffer,
                                     new TransformEngineImpl(),
                                     new CompoundPacketEngine(),
-                                    new FECTransformEngine(ulpfecPT, (byte)-1),
+                                    new FECTransformEngine(FECTransformEngine.FecType.ULPFEC,
+                                        ulpfecPT, (byte)-1, mediaStream),
                                     new REDTransformEngine(redPT, (byte)-1)
                             });
 
@@ -1669,7 +1670,7 @@ public class RecorderRtpImpl
                         // it gets to FMJ, because we want to, for example,
                         // flush the packet buffer before that.
 
-                        long ssrc = pkt.getRTCPSSRCAsLong();
+                        long ssrc = pkt.getRTCPSSRC();
                         if (logger.isInfoEnabled())
                             logger.info("RTCP BYE for SSRC="+ssrc);
 

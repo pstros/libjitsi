@@ -15,6 +15,7 @@
  */
 package org.jitsi.impl.neomedia;
 
+import org.jitsi.service.neomedia.*;
 import org.jitsi.util.*;
 import org.jitsi.util.function.*;
 
@@ -22,7 +23,7 @@ import org.jitsi.util.function.*;
  * @author George Politis
  */
 public class AbstractRTPPacketPredicate
-    implements Predicate<RawPacket>
+    implements Predicate<ByteArrayBuffer>
 {
     /**
      * The <tt>Logger</tt> used by the <tt>AbstractRTPPacketPredicate</tt>
@@ -50,49 +51,24 @@ public class AbstractRTPPacketPredicate
      * {@inheritDoc}
      */
     @Override
-    public boolean test(RawPacket pkt)
+    public boolean test(ByteArrayBuffer pkt)
     {
-        // XXX inspired by RtpChannelDatagramFilter.accept().
-        boolean result;
-
-        if (pkt != null)
+        // If isHeaderValid fails, this is not a valid RTP packet either.
+        if (pkt == null
+                || !RTCPUtils.isHeaderValid(
+                    pkt.getBuffer(), pkt.getOffset(), pkt.getLength()))
         {
-            if (pkt.getLength() >= 4)
-            {
-                if (pkt.getVersion() == 2) // RTP/RTCP version field
-                {
-                    byte[] buff = pkt.getBuffer();
-                    int off = pkt.getOffset();
-                    int pt = buff[off + 1] & 0xff;
+            return false;
+        }
 
-                    if (200 <= pt && pt <= 211)
-                    {
-                        result = rtcp;
-                    }
-                    else
-                    {
-                        result = !rtcp;
-                    }
-                }
-                else
-                {
-                    result = false;
-                }
-            }
-            else
-            {
-                result = false;
-            }
+        if (RTCPUtils.isRtcp(
+            pkt.getBuffer(), pkt.getOffset(), pkt.getLength()))
+        {
+            return rtcp;
         }
         else
         {
-            result = false;
+            return !rtcp;
         }
-        if (!result)
-        {
-            logger.debug("Caught a non-RTCP/RTP packet.");
-        }
-
-        return result;
     }
 }

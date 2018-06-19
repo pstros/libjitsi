@@ -18,8 +18,7 @@ package org.jitsi.impl.neomedia.rtcp;
 import java.io.*;
 import net.sf.fmj.media.rtp.*;
 import net.sf.fmj.media.rtp.util.*;
-import org.jitsi.impl.neomedia.*;
-import org.jitsi.impl.neomedia.rtp.translator.*;
+import org.jitsi.service.neomedia.*;
 import org.jitsi.service.neomedia.event.*;
 import org.jitsi.service.neomedia.rtp.*;
 import org.jitsi.util.*;
@@ -80,12 +79,24 @@ public class RTCPPacketParserEx
         return parse(udp);
     }
 
+    /**
+     * @param base
+     * @param firstbyte the first byte of the RTCP packet
+     * @param type the packet type of the RTCP packet
+     * @param length the length in bytes of the RTCP packet, including all
+     * headers and excluding padding.
+     * @param in the binary representation from which the new
+     * instance is to be initialized, excluding the first 4 bytes.
+     * @return
+     * @throws BadFormatException
+     * @throws IOException
+     */
     @Override
     protected RTCPPacket parse(
             RTCPCompoundPacket base,
-            int firstbyte /* without version/padding */,
+            int firstbyte,
             int type,
-            int length /* in actual bytes */,
+            int length,
             DataInputStream in)
         throws BadFormatException, IOException
     {
@@ -121,7 +132,8 @@ public class RTCPPacketParserEx
             }
             else
             {
-                switch (firstbyte)
+                int fmt = firstbyte & 0x1f;
+                switch (fmt)
                 {
                 case RTCPREMBPacket.FMT: // REMB
 /*
@@ -188,11 +200,23 @@ public class RTCPPacketParserEx
         }
     }
 
+    /**
+     * Creates a new {@link RTCPFBPacket} instance.
+     * @param base
+     * @param firstbyte the first byte of the RTCP packet.
+     * @param type the packet type.
+     * @param length the length in bytes.
+     * @param in
+     * @param senderSSRC
+     * @param sourceSSRC
+     * @return
+     * @throws IOException
+     */
     private RTCPFBPacket parseRTCPFBPacket(
             RTCPCompoundPacket base,
             int firstbyte,
             int type,
-            int length /* in actual bytes */,
+            int length,
             DataInputStream in,
             long senderSSRC,
             long sourceSSRC)
@@ -200,17 +224,26 @@ public class RTCPPacketParserEx
     {
         RTCPFBPacket fb;
 
-        if (type == RTCPFBPacket.RTPFB && firstbyte == NACKPacket.FMT)
+        int fmt = firstbyte & 0x1f;
+        if (type == RTCPFBPacket.RTPFB && fmt == NACKPacket.FMT)
+        {
             fb = new NACKPacket(base);
+        }
+        else if (type == RTCPFBPacket.RTPFB && fmt == RTCPTCCPacket.FMT)
+        {
+            fb = new RTCPTCCPacket(base);
+        }
         else
+        {
             fb = new RTCPFBPacket(base);
+        }
 
-        fb.fmt = firstbyte;
+        fb.fmt = fmt;
         fb.type = type;
         fb.senderSSRC = senderSSRC;
         fb.sourceSSRC = sourceSSRC;
 
-        int fcilen = length - 12; // header + ssrc + ssrc = 14
+        int fcilen = length - 12; // header + sender ssrc + source ssrc = 12
 
         if (fcilen != 0)
         {
@@ -259,7 +292,7 @@ public class RTCPPacketParserEx
 
                     for (int i = 0, end = fcilen - 8; i < end; i += 8)
                     {
-                        int ssrc = RTPTranslatorImpl.readInt(fb.fci, i);
+                        int ssrc = RTPUtils.readInt(fb.fci, i);
                         byte b4 = fb.fci[i + 4];
                         int mxTbrExp /* 6 bits */ = (b4 & 0xFC) >>> 2;
                         byte b6 = fb.fci[i + 6];

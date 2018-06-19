@@ -15,6 +15,9 @@
  */
 package org.jitsi.impl.neomedia.rtp.sendsidebandwidthestimation;
 
+import org.jitsi.impl.neomedia.rtcp.*;
+import org.jitsi.impl.neomedia.rtp.*;
+import org.jitsi.impl.neomedia.*;
 import org.jitsi.service.neomedia.*;
 import org.jitsi.service.neomedia.rtp.*;
 import org.jitsi.util.*;
@@ -30,7 +33,8 @@ import java.util.*;
  * @author Boris Grozev
  */
 class SendSideBandwidthEstimation
-    implements REMBListener, BandwidthEstimator
+    extends RTCPPacketListenerAdapter
+    implements BandwidthEstimator
 {
     /**
      * send_side_bandwidth_estimation.cc
@@ -68,6 +72,14 @@ class SendSideBandwidthEstimation
      */
     private static final Logger logger
             = Logger.getLogger(SendSideBandwidthEstimation.class);
+
+    /**
+     * The {@link TimeSeriesLogger} to be used by this instance to print time
+     * series.
+     */
+    private static final TimeSeriesLogger timeSeriesLogger
+            = TimeSeriesLogger.getTimeSeriesLogger(
+                    SendSideBandwidthEstimation.class);
 
     /**
      * send_side_bandwidth_estimation.h
@@ -131,15 +143,23 @@ class SendSideBandwidthEstimation
      */
     private Deque<Pair<Long>> min_bitrate_history_ = new LinkedList<>();
 
+    /**
+     * The {@link DiagnosticContext} of this instance.
+     */
+    private final DiagnosticContext diagnosticContext;
+
     private final List<BandwidthEstimator.Listener> listeners
         = new LinkedList<>();
 
-    //TODO: get RTT from here
+    /**
+     * The {@link MediaStream} for this {@link SendSideBandwidthEstimation}.
+     */
     private final MediaStream mediaStream;
 
-    SendSideBandwidthEstimation(MediaStream stream, long startBitrate)
+    SendSideBandwidthEstimation(MediaStreamImpl stream, long startBitrate)
     {
         mediaStream = stream;
+        diagnosticContext = stream.getDiagnosticContext();
         setBitrate(startBitrate);
     }
 
@@ -186,7 +206,7 @@ class SendSideBandwidthEstimation
         {
             setBitrate(capBitrateToThresholds(bwe_incoming_));
             min_bitrate_history_.clear();
-            min_bitrate_history_.addLast(new Pair<>(now, bitrate));
+            min_bitrate_history_.addLast(new Pair<>(now, bitrate_));
             return;
         }
         updateMinHistory(now);
@@ -212,10 +232,29 @@ class SendSideBandwidthEstimation
                 // (gives a little extra increase at low rates, negligible at higher
                 // rates).
                 bitrate += 1000;
+
+                if (timeSeriesLogger.isTraceEnabled())
+                {
+                    timeSeriesLogger.trace(diagnosticContext
+                            .makeTimeSeriesPoint("loss_estimate", now)
+                            .addField("action", "increase")
+                            .addField("last_fraction_loss", last_fraction_loss_)
+                            .addField("bitrate_bps", bitrate));
+                }
+
             }
             else if (last_fraction_loss_ <= 26)
             {
                 // Loss between 2% - 10%: Do nothing.
+
+                if (timeSeriesLogger.isTraceEnabled())
+                {
+                    timeSeriesLogger.trace(diagnosticContext
+                            .makeTimeSeriesPoint("loss_estimate", now)
+                            .addField("action", "keep")
+                            .addField("last_fraction_loss", last_fraction_loss_)
+                            .addField("bitrate_bps", bitrate));
+                }
             }
             else
             {
@@ -233,6 +272,15 @@ class SendSideBandwidthEstimation
                     bitrate = (long) (
                         (bitrate * (512 - last_fraction_loss_)) / 512.0);
                     has_decreased_since_last_fraction_loss_ = true;
+
+                    if (timeSeriesLogger.isTraceEnabled())
+                    {
+                        timeSeriesLogger.trace(diagnosticContext
+                                .makeTimeSeriesPoint("loss_estimate", now)
+                                .addField("action", "decrease")
+                                .addField("last_fraction_loss", last_fraction_loss_)
+                                .addField("bitrate_bps", bitrate));
+                    }
                 }
             }
         }
@@ -304,9 +352,10 @@ class SendSideBandwidthEstimation
     }
 
     /**
-     * void SendSideBandwidthEstimation::UpdateReceiverEstimate
+     * {@inheritDoc}
      */
-    private synchronized void updateReceiverEstimate(long bandwidth)
+    @Override
+    public synchronized void updateReceiverEstimate(long bandwidth)
     {
         bwe_incoming_ = bandwidth;
         setBitrate(capBitrateToThresholds(bitrate_));
@@ -347,6 +396,33 @@ class SendSideBandwidthEstimation
      * {@inheritDoc}
      */
     @Override
+    public long getLatestEstimate()
+    {
+        return bitrate_;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public long getLatestREMB()
+    {
+        return bwe_incoming_;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public int getLatestFractionLoss()
+    {
+        return last_fraction_loss_;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
     public synchronized void addListener(Listener listener)
     {
         listeners.add(listener);
@@ -365,9 +441,9 @@ class SendSideBandwidthEstimation
      * {@inheritDoc}
      */
     @Override
-    public void rembReceived(long bitrateBps)
+    public void rembReceived(RTCPREMBPacket remb)
     {
-        updateReceiverEstimate(bitrateBps);
+        updateReceiverEstimate(remb.getBitrate());
     }
 
     /**
@@ -376,7 +452,7 @@ class SendSideBandwidthEstimation
      */
     private synchronized long getRtt()
     {
-        long rtt = mediaStream.getMediaStreamStats().getRttMs();
+        long rtt = mediaStream.getMediaStreamStats().getSendStats().getRtt();
         if (rtt < 0 || rtt > 1000)
         {
             logger.warn("RTT not calculated, or has a suspiciously high value ("

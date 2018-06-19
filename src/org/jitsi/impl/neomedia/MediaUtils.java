@@ -22,7 +22,6 @@ import javax.media.format.*;
 import javax.sdp.*;
 
 import org.jitsi.impl.neomedia.codec.*;
-import org.jitsi.impl.neomedia.codec.video.h264.*;
 import org.jitsi.impl.neomedia.device.*;
 import org.jitsi.impl.neomedia.format.*;
 import org.jitsi.service.configuration.*;
@@ -39,9 +38,16 @@ import org.jitsi.util.*;
  * @author Emil Ivov
  * @author Lyubomir Marinov
  * @author Boris Grozev
+ * @author George Politis
  */
 public class MediaUtils
 {
+    /**
+     * The <tt>Logger</tt> used by the <tt>MediaUtils</tt> class
+     * for logging output.
+     */
+    private static final Logger logger = Logger.getLogger(MediaUtils.class);
+
     /**
      * An empty array with <tt>MediaFormat</tt> element type. Explicitly defined
      * in order to reduce unnecessary allocations, garbage collection.
@@ -53,7 +59,7 @@ public class MediaUtils
      * defined in RFC 3551.
      */
     private static final Map<String, String> jmfEncodingToEncodings
-        = new HashMap<String, String>();
+        = new HashMap<>();
 
     /**
      * The maximum number of channels for audio that is available through
@@ -78,7 +84,7 @@ public class MediaUtils
      * RFC 3551 and are thus referred to as having dynamic RTP payload types.
      */
     private static final List<MediaFormat> rtpPayloadTypelessMediaFormats
-        = new ArrayList<MediaFormat>();
+        = new ArrayList<>();
 
     /**
      * The <tt>Map</tt> of RTP payload types (expressed as <tt>String</tt>s) to
@@ -86,7 +92,7 @@ public class MediaUtils
      */
     private static final Map<String, MediaFormat[]>
         rtpPayloadTypeStrToMediaFormats
-            = new HashMap<String, MediaFormat[]>();
+            = new HashMap<>();
 
     static
     {
@@ -101,10 +107,9 @@ public class MediaUtils
          * Some codecs depend on JMF native libraries which are only available
          * on 32-bit Linux and 32-bit Windows.
          */
-        if(OSUtils.IS_LINUX32 || OSUtils.IS_WINDOWS32)
+        if (OSUtils.IS_LINUX32 || OSUtils.IS_WINDOWS32)
         {
-            Map<String, String> g723FormatParams
-                = new HashMap<String, String>();
+            Map<String, String> g723FormatParams = new HashMap<>();
             g723FormatParams.put("annexa", "no");
             g723FormatParams.put("bitrate", "6.3");
             addMediaFormats(
@@ -149,8 +154,7 @@ public class MediaUtils
             8000);
         if (EncodingConfigurationImpl.G729)
         {
-            Map<String, String> g729FormatParams
-                = new HashMap<String, String>();
+            Map<String, String> g729FormatParams = new HashMap<>();
             g729FormatParams.put("annexb", "no");
 
             addMediaFormats(
@@ -182,14 +186,21 @@ public class MediaUtils
             Constants.ULPFEC,
             MediaType.VIDEO,
             Constants.ULPFEC);
+        addMediaFormats(
+            MediaFormat.RTP_PAYLOAD_TYPE_UNKNOWN,
+            Constants.FLEXFEC_03,
+            MediaType.VIDEO,
+            Constants.FLEXFEC_03);
 
         ConfigurationService cfg = LibJitsi.getConfigurationService();
 
         boolean advertiseFEC
             = cfg.getBoolean(Constants.PROP_SILK_ADVERSISE_FEC, false);
-        Map<String,String> silkFormatParams = new HashMap<String, String>();
-        if(advertiseFEC)
+        Map<String,String> silkFormatParams = new HashMap<>();
+        if (advertiseFEC)
+        {
             silkFormatParams.put("useinbandfec", "1");
+        }
         addMediaFormats(
                 MediaFormat.RTP_PAYLOAD_TYPE_UNKNOWN,
                 "SILK",
@@ -199,17 +210,20 @@ public class MediaUtils
                 null,
                 8000, 12000, 16000, 24000);
 
-        Map<String, String> opusFormatParams = new HashMap<String,String>();
+        Map<String, String> opusFormatParams = new HashMap<>();
         boolean opusFec = cfg.getBoolean(Constants.PROP_OPUS_FEC, true);
-        if(!opusFec)
+        if (!opusFec)
+        {
             opusFormatParams.put("useinbandfec", "0");
+        }
         boolean opusDtx = cfg.getBoolean(Constants.PROP_OPUS_DTX, true);
-        if(opusDtx)
+        if (opusDtx)
+        {
             opusFormatParams.put("usedtx", "1");
+        }
         //opusFormatParams.put("minptime", "10");
 
-        Map<String, String> opusAdvancedParams
-                = new HashMap<String, String>();
+        Map<String, String> opusAdvancedParams = new HashMap<>();
         String packetizationTime = Constants.PTIME;
         opusAdvancedParams.put(packetizationTime, "20");
 
@@ -252,82 +266,100 @@ public class MediaUtils
          */
 
         /* H264 */
-        Map<String, String> h264FormatParams
-            = new HashMap<String, String>();
-        String packetizationMode
-            = VideoMediaFormatImpl.H264_PACKETIZATION_MODE_FMTP;
-        Map<String, String> h264AdvancedAttributes
-            = new HashMap<String, String>();
-
-        /*
-         * Disable PLI because the periodic intra-refresh feature of FFmpeg/x264
-         * is used.
-         */
-        // h264AdvancedAttributes.put("rtcp-fb", "nack pli");
-
-        /*
-         * XXX The initialization of MediaServiceImpl is very complex so it is
-         * wise to not reference it at the early stage of its initialization.
-         */
-        ScreenDevice screen = ScreenDeviceImpl.getDefaultScreenDevice();
-        java.awt.Dimension res = (screen == null) ? null : screen.getSize();
-
-        h264AdvancedAttributes.put("imageattr", createImageAttr(null, res));
-
-        if ((cfg == null)
-                || cfg
-                    .getString(
-                            "net.java.sip.communicator.impl.neomedia"
-                                + ".codec.video.h264.defaultProfile",
-                            JNIEncoder.MAIN_PROFILE)
-                        .equals(JNIEncoder.MAIN_PROFILE))
+        // Checks whether ffmpeg is enabled and whether h264 is available in
+        // the provided binaries
+        boolean enableFfmpeg
+            = cfg.getBoolean(MediaService.ENABLE_FFMPEG_CODECS_PNAME, false);
+        boolean h264Enabled = false;
+        if (enableFfmpeg)
         {
-            // main profile, common features, HD capable level 3.1
-            h264FormatParams.put("profile-level-id", "4DE01f");
+            try
+            {
+                h264Enabled
+                    = FFmpeg.avcodec_find_encoder(FFmpeg.CODEC_ID_H264) != 0;
+            }
+            catch (Throwable t)
+            {
+                logger.debug("H264 codec not found", t);
+            }
         }
-        else
+        if (h264Enabled)
         {
-            // baseline profile, common features, HD capable level 3.1
-            h264FormatParams.put("profile-level-id", "42E01f");
-        }
+            Map<String, String> h264FormatParams = new HashMap<>();
+            String packetizationMode
+                = VideoMediaFormatImpl.H264_PACKETIZATION_MODE_FMTP;
+            Map<String, String> h264AdvancedAttributes = new HashMap<>();
 
-        // By default, packetization-mode=1 is enabled.
-        if ((cfg == null)
+            /*
+             * Disable PLI because the periodic intra-refresh feature of FFmpeg/x264
+             * is used.
+             */
+            // h264AdvancedAttributes.put("rtcp-fb", "nack pli");
+
+            /*
+             * XXX The initialization of MediaServiceImpl is very complex so it is
+             * wise to not reference it at the early stage of its initialization.
+             */
+            ScreenDevice screen = ScreenDeviceImpl.getDefaultScreenDevice();
+            java.awt.Dimension res = (screen == null) ? null : screen.getSize();
+
+            h264AdvancedAttributes.put("imageattr", createImageAttr(null, res));
+
+            /*if ((cfg == null)
+                    || cfg
+                        .getString(
+                                "net.java.sip.communicator.impl.neomedia"
+                                    + ".codec.video.h264.defaultProfile",
+                                JNIEncoder.MAIN_PROFILE)
+                            .equals(JNIEncoder.MAIN_PROFILE))
+            {
+                // main profile, common features, HD capable level 3.1
+                h264FormatParams.put("profile-level-id", "4DE01f");
+            }
+            else*/
+            {
+                // baseline profile, common features, HD capable level 3.1
+                h264FormatParams.put("profile-level-id", "42E01f");
+            }
+
+            // By default, packetization-mode=1 is enabled.
+            if ((cfg == null)
                 || cfg.getBoolean(
-                        "net.java.sip.communicator.impl.neomedia"
-                            + ".codec.video.h264.packetization-mode-1.enabled",
-                        true))
-        {
-            // packetization-mode=1
-            h264FormatParams.put(packetizationMode, "1");
-            addMediaFormats(
+                "net.java.sip.communicator.impl.neomedia"
+                    + ".codec.video.h264.packetization-mode-1.enabled",
+                true))
+            {
+                // packetization-mode=1
+                h264FormatParams.put(packetizationMode, "1");
+                addMediaFormats(
                     MediaFormat.RTP_PAYLOAD_TYPE_UNKNOWN,
-                    "H264",
+                    Constants.H264,
                     MediaType.VIDEO,
                     Constants.H264_RTP,
                     h264FormatParams,
                     h264AdvancedAttributes);
-        }
-        // packetization-mode=0
-        /*
-         * XXX At the time of this writing,
-         * EncodingConfiguration#compareEncodingPreferences(MediaFormat,
-         * MediaFormat) is incomplete and considers two MediaFormats to be
-         * equal if they have an equal number of format parameters (given
-         * that the encodings and clock rates are equal, of course). Either
-         * fix the method in question or don't add a format parameter for
-         * packetization-mode 0 (which is equivalent to having
-         * packetization-mode explicitly defined as 0 anyway, according to
-         * the respective RFC).
-         */
-        h264FormatParams.remove(packetizationMode);
-        addMediaFormats(
+            }
+            // packetization-mode=0
+            /*
+             * XXX At the time of this writing,
+             * EncodingConfiguration#compareEncodingPreferences(MediaFormat,
+             * MediaFormat) is incomplete and considers two MediaFormats to be
+             * equal if they have an equal number of format parameters (given
+             * that the encodings and clock rates are equal, of course). Either
+             * fix the method in question or don't add a format parameter for
+             * packetization-mode 0 (which is equivalent to having
+             * packetization-mode explicitly defined as 0 anyway, according to
+             * the respective RFC).
+             */
+            h264FormatParams.remove(packetizationMode);
+            addMediaFormats(
                 MediaFormat.RTP_PAYLOAD_TYPE_UNKNOWN,
-                "H264",
+                Constants.H264,
                 MediaType.VIDEO,
                 Constants.H264_RTP,
                 h264FormatParams,
                 h264AdvancedAttributes);
+        }
 
         /* H263+
         Map<String, String> h263FormatParams
@@ -353,25 +385,49 @@ public class MediaUtils
 
         addMediaFormats(
                 MediaFormat.RTP_PAYLOAD_TYPE_UNKNOWN,
-                "VP8",
+                Constants.VP8,
                 MediaType.VIDEO,
                 Constants.VP8_RTP,
                 null, null);
 
+        addMediaFormats(
+                MediaFormat.RTP_PAYLOAD_TYPE_UNKNOWN,
+                Constants.VP9,
+                MediaType.VIDEO,
+                Constants.VP9_RTP,
+                null, null);
+
+        addMediaFormats(
+                MediaFormat.RTP_PAYLOAD_TYPE_UNKNOWN,
+                Constants.RTX,
+                MediaType.VIDEO,
+                Constants.RTX_RTP,
+                null, null);
+
         // Calculate the values of the MAX_AUDIO_* static fields of MediaUtils.
         List<MediaFormat> audioMediaFormats
-            = new ArrayList<MediaFormat>(
+            = new ArrayList<>(
                     rtpPayloadTypeStrToMediaFormats.size()
                         + rtpPayloadTypelessMediaFormats.size());
 
         for (MediaFormat[] mediaFormats
                 : rtpPayloadTypeStrToMediaFormats.values())
+        {
             for (MediaFormat mediaFormat : mediaFormats)
+            {
                 if (MediaType.AUDIO.equals(mediaFormat.getMediaType()))
+                {
                     audioMediaFormats.add(mediaFormat);
+                }
+            }
+        }
         for (MediaFormat mediaFormat : rtpPayloadTypelessMediaFormats)
+        {
             if (MediaType.AUDIO.equals(mediaFormat.getMediaType()))
+            {
                 audioMediaFormats.add(mediaFormat);
+            }
+        }
 
         int maxAudioChannels = Format.NOT_SPECIFIED;
         double maxAudioSampleRate = Format.NOT_SPECIFIED;
@@ -393,11 +449,17 @@ public class MediaUtils
                 channels = 1;
 
             if (maxAudioChannels < channels)
+            {
                 maxAudioChannels = channels;
+            }
             if (maxAudioSampleRate < sampleRate)
+            {
                 maxAudioSampleRate = sampleRate;
+            }
             if (maxAudioSampleSizeInBits < sampleSizeInBits)
+            {
                 maxAudioSampleSizeInBits = sampleSizeInBits;
+            }
         }
 
         MAX_AUDIO_CHANNELS = maxAudioChannels;
@@ -473,8 +535,7 @@ public class MediaUtils
             double... clockRates)
     {
         int clockRateCount = clockRates.length;
-        List<MediaFormat> mediaFormats
-            = new ArrayList<MediaFormat>(clockRateCount);
+        List<MediaFormat> mediaFormats = new ArrayList<>(clockRateCount);
 
         if (clockRateCount > 0)
         {
@@ -485,14 +546,18 @@ public class MediaUtils
                 switch (mediaType)
                 {
                 case AUDIO:
-                    if(channels == 1)
+                    if (channels == 1)
+                    {
                         format = new AudioFormat(jmfEncoding);
+                    }
                     else
+                    {
                         format = new AudioFormat(
                                 jmfEncoding,
                                 Format.NOT_SPECIFIED,
                                 Format.NOT_SPECIFIED,
                                 channels);
+                    }
                     break;
                 case VIDEO:
                     format
@@ -512,7 +577,9 @@ public class MediaUtils
                             advancedAttributes);
 
                 if (mediaFormat != null)
+                {
                     mediaFormats.add(mediaFormat);
+                }
             }
         }
         else
@@ -547,22 +614,28 @@ public class MediaUtils
                         advancedAttributes);
 
             if (mediaFormat != null)
+            {
                 mediaFormats.add(mediaFormat);
+            }
         }
 
         if (mediaFormats.size() > 0)
         {
             if (MediaFormat.RTP_PAYLOAD_TYPE_UNKNOWN == rtpPayloadType)
+            {
                 rtpPayloadTypelessMediaFormats.addAll(mediaFormats);
+            }
             else
+            {
                 rtpPayloadTypeStrToMediaFormats.put(
-                        Byte.toString(rtpPayloadType),
-                        mediaFormats.toArray(EMPTY_MEDIA_FORMATS));
+                    Byte.toString(rtpPayloadType),
+                    mediaFormats.toArray(EMPTY_MEDIA_FORMATS));
+            }
 
             jmfEncodingToEncodings.put(
-                    ((MediaFormatImpl<? extends Format>) mediaFormats.get(0))
-                        .getJMFEncoding(),
-                    encoding);
+                ((MediaFormatImpl<? extends Format>) mediaFormats.get(0))
+                    .getJMFEncoding(),
+                encoding);
         }
     }
 
@@ -624,7 +697,7 @@ public class MediaUtils
         StringBuffer img = new StringBuffer();
 
         /* send width */
-        if(sendSize != null)
+        if (sendSize != null)
         {
             /* single value => send [x=width,y=height] */
             /*img.append("send [x=");
@@ -661,7 +734,7 @@ public class MediaUtils
         }
 
         /* receive size */
-        if(maxRecvSize != null)
+        if (maxRecvSize != null)
         {
             // basically we can receive any size up to our screen display size
 
@@ -699,11 +772,17 @@ public class MediaUtils
         double clockRate;
 
         if (format instanceof AudioFormat)
+        {
             clockRate = ((AudioFormat) format).getSampleRate();
+        }
         else if (format instanceof VideoFormat)
+        {
             clockRate = VideoMediaFormatImpl.DEFAULT_CLOCK_RATE;
+        }
         else
+        {
             clockRate = Format.NOT_SPECIFIED;
+        }
 
         byte rtpPayloadType = getRTPPayloadType(format.getEncoding(), clockRate);
 
@@ -715,7 +794,9 @@ public class MediaUtils
                     = (MediaFormatImpl<? extends Format>) mediaFormat;
 
                 if (format.matches(mediaFormatImpl.getFormat()))
+                {
                     return mediaFormat;
+                }
             }
         }
         return null;
@@ -754,9 +835,13 @@ public class MediaUtils
             Map<String, String> fmtps)
     {
         for (MediaFormat format : getMediaFormats(encoding))
+        {
             if ((format.getClockRate() == clockRate)
-                    && format.formatParametersMatch(fmtps))
+                && format.formatParametersMatch(fmtps))
+            {
                 return format;
+            }
+        }
         return null;
     }
 
@@ -810,15 +895,25 @@ public class MediaUtils
      */
     public static MediaFormat[] getMediaFormats(MediaType mediaType)
     {
-        List<MediaFormat> mediaFormats = new ArrayList<MediaFormat>();
+        List<MediaFormat> mediaFormats = new ArrayList<>();
 
         for (MediaFormat[] formats : rtpPayloadTypeStrToMediaFormats.values())
+        {
             for (MediaFormat format : formats)
+            {
                 if (format.getMediaType().equals(mediaType))
+                {
                     mediaFormats.add(format);
+                }
+            }
+        }
         for (MediaFormat format : rtpPayloadTypelessMediaFormats)
+        {
             if (format.getMediaType().equals(mediaType))
+            {
                 mediaFormats.add(format);
+            }
+        }
         return mediaFormats.toArray(EMPTY_MEDIA_FORMATS);
     }
 
@@ -839,34 +934,46 @@ public class MediaUtils
 
         for (Map.Entry<String, String> jmfEncodingToEncoding
                 : jmfEncodingToEncodings.entrySet())
-            if (jmfEncodingToEncoding.getValue().equals(encoding))
+        {
+            if (jmfEncodingToEncoding.getValue().equalsIgnoreCase(encoding))
             {
                 jmfEncoding = jmfEncodingToEncoding.getKey();
                 break;
             }
+        }
 
-        List<MediaFormat> mediaFormats = new ArrayList<MediaFormat>();
+        List<MediaFormat> mediaFormats = new ArrayList<>();
 
         if (jmfEncoding != null)
         {
             for (MediaFormat[] rtpPayloadTypeMediaFormats
                     : rtpPayloadTypeStrToMediaFormats.values())
+            {
                 for (MediaFormat rtpPayloadTypeMediaFormat
-                            : rtpPayloadTypeMediaFormats)
+                    : rtpPayloadTypeMediaFormats)
+                {
                     if (((MediaFormatImpl<? extends Format>)
-                                    rtpPayloadTypeMediaFormat)
-                                .getJMFEncoding().equals(jmfEncoding))
+                        rtpPayloadTypeMediaFormat)
+                        .getJMFEncoding().equals(jmfEncoding))
+                    {
                         mediaFormats.add(rtpPayloadTypeMediaFormat);
+                    }
+                }
+            }
 
 
             if (mediaFormats.size() < 1)
             {
                 for (MediaFormat rtpPayloadTypelessMediaFormat
                         : rtpPayloadTypelessMediaFormats)
+                {
                     if (((MediaFormatImpl<? extends Format>)
-                                    rtpPayloadTypelessMediaFormat)
-                                .getJMFEncoding().equals(jmfEncoding))
+                        rtpPayloadTypelessMediaFormat)
+                        .getJMFEncoding().equals(jmfEncoding))
+                    {
                         mediaFormats.add(rtpPayloadTypelessMediaFormat);
+                    }
+                }
             }
         }
         return mediaFormats;
@@ -891,43 +998,79 @@ public class MediaUtils
     public static byte getRTPPayloadType(String jmfEncoding, double clockRate)
     {
         if (jmfEncoding == null)
+        {
             return MediaFormat.RTP_PAYLOAD_TYPE_UNKNOWN;
+        }
         else if (jmfEncoding.equals(AudioFormat.ULAW_RTP))
+        {
             return SdpConstants.PCMU;
+        }
         else if (jmfEncoding.equals(Constants.ALAW_RTP))
+        {
             return SdpConstants.PCMA;
+        }
         else if (jmfEncoding.equals(AudioFormat.GSM_RTP))
+        {
             return SdpConstants.GSM;
+        }
         else if (jmfEncoding.equals(AudioFormat.G723_RTP))
+        {
             return SdpConstants.G723;
+        }
         else if (jmfEncoding.equals(AudioFormat.DVI_RTP)
                     && (clockRate == 8000))
+        {
             return SdpConstants.DVI4_8000;
+        }
         else if (jmfEncoding.equals(AudioFormat.DVI_RTP)
                     && (clockRate == 16000))
+        {
             return SdpConstants.DVI4_16000;
+        }
         else if (jmfEncoding.equals(AudioFormat.ALAW))
+        {
             return SdpConstants.PCMA;
+        }
         else if (jmfEncoding.equals(Constants.G722))
+        {
             return SdpConstants.G722;
+        }
         else if (jmfEncoding.equals(Constants.G722_RTP))
+        {
             return SdpConstants.G722;
+        }
         else if (jmfEncoding.equals(AudioFormat.GSM))
+        {
             return SdpConstants.GSM;
+        }
         else if (jmfEncoding.equals(AudioFormat.GSM_RTP))
+        {
             return SdpConstants.GSM;
+        }
         else if (jmfEncoding.equals(AudioFormat.G728_RTP))
+        {
             return SdpConstants.G728;
+        }
         else if (jmfEncoding.equals(AudioFormat.G729_RTP))
+        {
             return SdpConstants.G729;
+        }
         else if (jmfEncoding.equals(VideoFormat.H263_RTP))
+        {
             return SdpConstants.H263;
+        }
         else if (jmfEncoding.equals(VideoFormat.JPEG_RTP))
+        {
             return SdpConstants.JPEG;
+        }
         else if (jmfEncoding.equals(VideoFormat.H261_RTP))
+        {
             return SdpConstants.H261;
+        }
         else
+        {
             return MediaFormat.RTP_PAYLOAD_TYPE_UNKNOWN;
+        }
     }
 
     /**

@@ -20,12 +20,47 @@ package org.jitsi.service.neomedia.rtp;
  */
 public interface BandwidthEstimator
 {
-    public void addListener(Listener listener);
-    public void removeListener(Listener listener);
+    /**
+     * Adds a listener to be notified about changes to the bandwidth estimation.
+     * @param listener
+     */
+    void addListener(Listener listener);
 
-    public interface Listener
+    /**
+     * Removes a listener.
+     * @param listener
+     */
+    void removeListener(Listener listener);
+
+    /**
+     * @return the latest estimate.
+     */
+    long getLatestEstimate();
+
+    /**
+     * @return the latest values of the Receiver Estimated Maximum Bandwidth.
+     */
+    long getLatestREMB();
+
+    /**
+     * void SendSideBandwidthEstimation::UpdateReceiverEstimate
+     * This is the entry/update point for the estimated bitrate in the
+     * REMBPacket or a Delay Based Controller estimated bitrate when the
+     * Delay based controller and the loss based controller lives on the
+     * send side. see internet draft on "Congestion Control for RTCWEB"
+     */
+    void updateReceiverEstimate(long bandwidth);
+
+    /**
+     * @return the latest effective fraction loss calculated by this
+     * {@link BandwidthEstimator}. The value is between 0 and 256 (corresponding
+     * to 0% and 100% respectively).
+     */
+    int getLatestFractionLoss();
+
+    interface Listener
     {
-        public void bandwidthEstimationChanged(long newValueBps);
+        void bandwidthEstimationChanged(long newValueBps);
     }
 }
 

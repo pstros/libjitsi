@@ -2,6 +2,7 @@ package org.jitsi.impl.neomedia.stats;
 
 import org.jitsi.impl.neomedia.*;
 import org.jitsi.service.neomedia.stats.*;
+import org.jitsi.util.*;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -17,6 +18,13 @@ public class MediaStreamStats2Impl
      * Window over which rates will be computed.
      */
     private static int INTERVAL = 1000;
+
+    /**
+     * The {@link Logger} used by the {@link MediaStreamStats2Impl} class and its
+     * instances for logging output.
+     */
+    private static final Logger logger
+        = Logger.getLogger(MediaStreamStatsImpl.class);
 
     /**
      * Hold per-SSRC statistics for received streams.
@@ -65,6 +73,42 @@ public class MediaStreamStats2Impl
             receiveStats
                 .packetProcessed(length, System.currentTimeMillis(), true);
         }
+    }
+
+    /**
+     * Notifies this instance that an RTP packet with a given SSRC and a given
+     * length was retransmitted.
+     * @param ssrc the SSRC of the packet.
+     * @param length the length in bytes of the packet.
+     */
+    public void rtpPacketRetransmitted(long ssrc, long length)
+    {
+        getSendStats(ssrc).rtpPacketRetransmitted(length);
+        sendStats.rtpPacketRetransmitted(length);
+    }
+
+    /**
+     * Notifies this instance that an RTP packet with a given SSRC and a given
+     * length was not retransmitted (that is, the remote endpoint requested it,
+     * and it was found in the local cache, but it was not retransmitted).
+     * @param ssrc the SSRC of the packet.
+     * @param length the length in bytes of the packet.
+     */
+    public void rtpPacketNotRetransmitted(long ssrc, long length)
+    {
+        getSendStats(ssrc).rtpPacketNotRetransmitted(length);
+        sendStats.rtpPacketNotRetransmitted(length);
+    }
+
+    /**
+     * Notifies this instance that the remote endpoint requested retransmission
+     * of a packet with a given SSRC, and it was not found in the local cache.
+     * @param ssrc the SSRC of the requested packet.
+     */
+    public void rtpPacketCacheMiss(long ssrc)
+    {
+        getSendStats(ssrc).rtpPacketCacheMiss();
+        sendStats.rtpPacketCacheMiss();
     }
 
     /**
@@ -139,18 +183,29 @@ public class MediaStreamStats2Impl
      */
     public void updateJitter(long ssrc, StreamDirection direction, double jitter)
     {
-        // TODO(boris) Currently we only maintain a jitter value for the entire
-        // MediaStream, and not for any of the individual SSRCs. At the time of
-        // this writing, it is unclear to me whether it should be kept this way,
-        // or whether keeping a per-SSRC value can be useful for something. So
-        // I am doing the easier thing.
+        // Maintain a jitter value for the entire MediaStream, and for
+        // the individual SSRCs(if available)
         if (direction == StreamDirection.DOWNLOAD)
         {
             receiveStats.setJitter(jitter);
+
+            // update jitter for known stats
+            ReceiveTrackStatsImpl receiveSsrcStat = receiveSsrcStats.get(ssrc);
+            if (receiveSsrcStat != null)
+            {
+                receiveSsrcStat.setJitter(jitter);
+            }
         }
         else if (direction == StreamDirection.UPLOAD)
         {
             sendStats.setJitter(jitter);
+
+            // update jitter for known stats
+            SendTrackStatsImpl sendSsrcStat = sendSsrcStats.get(ssrc);
+            if (sendSsrcStat != null)
+            {
+                sendSsrcStat.setJitter(jitter);
+            }
         }
     }
 
@@ -162,13 +217,24 @@ public class MediaStreamStats2Impl
      */
     public void updateRtt(long ssrc, long rtt)
     {
-        // TODO(boris) Currently we only maintain an RTT value for the entire
-        // MediaStream, and not for any of the individual SSRCs. At the time of
-        // this writing, it is unclear to me whether it should be kept this way,
-        // or whether keeping a per-SSRC value can be useful for something. So
-        // I am doing the easier thing.
+        // RTT value for the entire MediaStream
         receiveStats.setRtt(rtt);
         sendStats.setRtt(rtt);
+
+        // RTT value for individual SSRCs
+        // skip invalid ssrc
+        if (ssrc < 0)
+            return;
+
+        // directly get the receive/send stats to avoid creating unnecessary
+        // stats
+        ReceiveTrackStatsImpl receiveSsrcStat = receiveSsrcStats.get(ssrc);
+        if (receiveSsrcStat != null)
+            receiveSsrcStat.setRtt(rtt);
+
+        SendTrackStatsImpl sendSsrcStat = sendSsrcStats.get(ssrc);
+        if (sendSsrcStat != null)
+            sendSsrcStat.setRtt(rtt);
     }
 
     /**
@@ -195,6 +261,14 @@ public class MediaStreamStats2Impl
     @Override
     public ReceiveTrackStatsImpl getReceiveStats(long ssrc)
     {
+        if (ssrc < 0)
+        {
+            logger.error("No received stats for an invalid SSRC: " + ssrc);
+            // We don't want to lose the data (and trigger an NPE), but at
+            // least we collect all invalid SSRC under the value of -1;
+            ssrc = -1;
+        }
+
         ReceiveTrackStatsImpl stats = receiveSsrcStats.get(ssrc);
         if (stats == null)
         {
@@ -218,6 +292,14 @@ public class MediaStreamStats2Impl
     @Override
     public SendTrackStatsImpl getSendStats(long ssrc)
     {
+        if (ssrc < 0)
+        {
+            logger.error("No send stats for an invalid SSRC: " + ssrc);
+            // We don't want to lose the data (and trigger an NPE), but at
+            // least we collect all invalid SSRC under the value of -1;
+            ssrc = -1;
+        }
+
         SendTrackStatsImpl stats = sendSsrcStats.get(ssrc);
         if (stats == null)
         {
@@ -335,6 +417,15 @@ public class MediaStreamStats2Impl
             }
             return count != 0 ? sum/count : 0;
         }
+
+        /**
+         * {@inheritDoc}
+         */
+        @Override
+        public int getHighestSent()
+        {
+            return -1;
+        }
     }
 
     /**
@@ -400,6 +491,31 @@ public class MediaStreamStats2Impl
                 packetsLost += child.getCurrentPacketsLost();
             }
             return packetsLost;
+        }
+
+        /**
+         * {@inheritDoc}
+         *
+         * @return the loss rate in the last interval.
+         */
+        @Override
+        public double getLossRate()
+        {
+            long lost = 0;
+            long expected = 0;
+
+            for (ReceiveTrackStats child : children.values())
+            {
+                // This is not thread safe and the counters might change
+                // between the two function calls below, but the result would
+                // be just a wrong value for the packet loss rate, and likely
+                // just off by a little bit.
+                long childLost = child.getCurrentPacketsLost();
+                expected += childLost + child.getCurrentPackets();
+                lost += childLost;
+            }
+
+            return expected == 0 ? 0 : (lost / expected);
         }
     }
 }

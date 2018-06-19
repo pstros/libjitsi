@@ -21,6 +21,7 @@ package org.jitsi.service.neomedia.codec;
  *
  * @author Lyubomir Marinov
  * @author Boris Grozev
+ * @author George Politis
  */
 public class Constants
 {
@@ -242,9 +243,19 @@ public class Constants
     public static final String ULPFEC = "ulpfec";
 
     /**
+     * The name of the flexfec-03 rtp format
+     */
+    public static final String FLEXFEC_03 = "flexfec-03";
+
+    /**
      * The VP8 constant
      */
     public static final String VP8 = "VP8";
+
+    /**
+     * The VP9 constant
+     */
+    public static final String VP9 = "VP9";
 
     /**
      * The RTX constant
@@ -252,7 +263,17 @@ public class Constants
     public static final String RTX = "rtx";
 
     /**
+     * The VP9/rtp constant.
+     */
+    public static final String VP9_RTP = VP9 + _RTP;
+
+    /**
      * The VP8/rtp constant.
      */
     public static final String VP8_RTP = VP8 + _RTP;
+
+    /**
+     * The RTX/rtp constant.
+     */
+    public static final String RTX_RTP = RTX + _RTP;
 }

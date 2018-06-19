@@ -28,6 +28,8 @@ import org.jitsi.service.neomedia.codec.*;
 import org.jitsi.service.neomedia.control.*;
 import org.jitsi.util.*;
 
+import static org.jitsi.impl.neomedia.codec.video.h264.H264.*;
+
 /**
  * Implements <tt>Codec</tt> to represent a depacketizer of H.264 RTP packets
  * into NAL units.
@@ -44,19 +46,6 @@ public class DePacketizer
      * instances for logging output.
      */
     private static final Logger logger = Logger.getLogger(DePacketizer.class);
-
-    /**
-     * The bytes to prefix any NAL unit to be output by this
-     * <tt>DePacketizer</tt> and given to a H.264 decoder. Includes
-     * start_code_prefix_one_3bytes. According to "B.1 Byte stream NAL unit
-     * syntax and semantics" of "ITU-T Rec. H.264 Advanced video coding for
-     * generic audiovisual services", zero_byte "shall be present" when "the
-     * nal_unit_type within the nal_unit() is equal to 7 (sequence parameter
-     * set) or 8 (picture parameter set)" or "the byte stream NAL unit syntax
-     * structure contains the first NAL unit of an access unit in decoding
-     * order".
-     */
-    public static final byte[] NAL_PREFIX = { 0, 0, 0, 1 };
 
     /**
      * The indicator which determines whether incomplete NAL units are output
@@ -349,7 +338,6 @@ public class DePacketizer
      *
      * @throws ResourceUnavailableException if any of the resources that this
      * <tt>Codec</tt> needs to operate cannot be acquired
-     * @see AbstractCodecExt#doOpen()
      */
     @Override
     protected synchronized void doOpen()
@@ -516,6 +504,83 @@ public class DePacketizer
         setRequestKeyFrame(requestKeyFrame);
 
         return ret;
+    }
+
+    /**
+     * Returns true if the buffer contains a H264 key frame at offset
+     * <tt>offset</tt>.
+     *
+     * @param buf the byte buffer to check
+     * @param off the offset in the byte buffer where the actuall data starts
+     * @param len the length of the data in the byte buffer
+     * @return true if the buffer contains a H264 key frame at offset
+     * <tt>offset</tt>.
+     */
+    public static boolean isKeyFrame(byte[] buf, int off, int len)
+    {
+      if (buf == null || buf.length < off + Math.max(len, 1))
+      {
+          return false;
+      }
+
+      int nalType =  buf[off] & kTypeMask;
+      // Single NAL Unit Packet
+      if (nalType == kFuA)
+      {
+          // Fragmented NAL units (FU-A).
+          if (parseFuaNaluForKeyFrame(buf, off, len))
+          {
+              return true;
+          }
+      }
+      else
+      {
+          if (parseSingleNaluForKeyFrame(buf, off, len))
+          {
+              return true;
+          }
+      }
+
+      return false;
+    }
+
+    /**
+     * Checks if a fragment of a NAL unit from a specific FU-A RTP packet
+     * payload is keyframe or not.
+     */
+    private static boolean parseFuaNaluForKeyFrame(byte[] buf, int off, int len) {
+      if (len < kFuAHeaderSize)
+      {
+          return false;
+      }
+      return ((buf[off + 1] & kTypeMask) == kIdr);
+    }
+
+    /**
+     * Checks if a fragment of a NAL unit from a specific FU-A RTP packet
+     * payload is keyframe or not.
+     */
+    private static boolean parseSingleNaluForKeyFrame(byte[] buf, int off, int len)
+    {
+        int naluStart = off + kNalHeaderSize;
+        int naluLength = len - kNalHeaderSize;
+        int nalType = buf[off] & kTypeMask;
+        if (nalType == kStapA)
+        {
+            // Skip the StapA header (StapA nal type + length).
+            if (len <= kStapAHeaderSize)
+            {
+                logger.error("StapA header truncated.");
+                return false;
+            }
+            if (!verifyStapANaluLengths(buf, naluStart, naluLength)) {
+                logger.error("StapA packet with incorrect NALU packet lengths.");
+                return false;
+            }
+            nalType = buf[off + kStapAHeaderSize] & kTypeMask;
+        }
+        return (nalType == kIdr || nalType == kSps ||
+                nalType == kPps || nalType == kSei);
     }
 
     /**

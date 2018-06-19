@@ -17,10 +17,10 @@ package org.jitsi.impl.neomedia.recording;
 
 import java.util.*;
 
-import org.jitsi.impl.neomedia.*;
 import org.jitsi.impl.neomedia.transform.*;
 import org.jitsi.service.configuration.*;
 import org.jitsi.service.libjitsi.*;
+import org.jitsi.service.neomedia.*;
 
 /**
  * A <tt>TransformEngine</tt> and <tt>PacketTransformer</tt> which implement
@@ -98,7 +98,7 @@ public class PacketBuffer
      * The map of actual <tt>Buffer</tt> instances, one for each SSRC that this
      * <tt>PacketBuffer</tt> buffers in each instant.
      */
-    private Map<Long, Buffer> buffers = new HashMap<Long, Buffer>();
+    private final Map<Long, Buffer> buffers = new HashMap<>();
 
     /**
      * Implements
@@ -200,9 +200,7 @@ public class PacketBuffer
     {
         synchronized (buffers)
         {
-            Buffer buffer = buffers.get(ssrc);
-            if (buffer != null)
-                buffers.remove(ssrc);
+            buffers.remove(ssrc);
         }
     }
 
@@ -215,21 +213,16 @@ public class PacketBuffer
      */
     private Buffer getBuffer(long ssrc)
     {
-        Buffer buffer = buffers.get(ssrc);
-        if (buffer == null)
+        synchronized (buffers)
         {
-            synchronized (buffers)
+            Buffer buffer = buffers.get(ssrc);
+            if (buffer == null)
             {
-                buffer = buffers.get(ssrc);
-                if (buffer == null)
-                {
-                    buffer = new Buffer(SIZE, ssrc);
-                    buffers.put(ssrc, buffer);
-                }
+                buffer = new Buffer(SIZE, ssrc);
+                buffers.put(ssrc, buffer);
             }
+            return buffer;
         }
-
-        return buffer;
     }
 
     /**
@@ -241,7 +234,11 @@ public class PacketBuffer
      */
     RawPacket[] emptyBuffer(long ssrc)
     {
-        Buffer buffer = buffers.get(ssrc);
+        Buffer buffer;
+        synchronized (buffers)
+        {
+            buffer = buffers.get(ssrc);
+        }
         if (buffer != null)
         {
             return buffer.empty();

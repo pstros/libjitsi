@@ -16,7 +16,6 @@
 package org.jitsi.impl.neomedia;
 
 import java.awt.*;
-import java.net.*;
 import java.util.*;
 import java.util.List;
 import java.util.regex.*;
@@ -28,11 +27,12 @@ import javax.media.protocol.*;
 
 import org.jitsi.impl.neomedia.control.*;
 import org.jitsi.impl.neomedia.device.*;
+import org.jitsi.impl.neomedia.rtcp.*;
 import org.jitsi.impl.neomedia.rtp.*;
 import org.jitsi.impl.neomedia.rtp.remotebitrateestimator.*;
 import org.jitsi.impl.neomedia.rtp.sendsidebandwidthestimation.*;
-import org.jitsi.impl.neomedia.rtp.translator.*;
 import org.jitsi.impl.neomedia.transform.*;
+import org.jitsi.impl.neomedia.transform.fec.*;
 import org.jitsi.service.configuration.*;
 import org.jitsi.service.libjitsi.*;
 import org.jitsi.service.neomedia.*;
@@ -52,12 +52,12 @@ import org.jitsi.util.event.*;
  *
  * @author Lyubomir Marinov
  * @author Sebastien Vincent
+ * @author George Politis
  */
 public class VideoMediaStreamImpl
     extends MediaStreamImpl
     implements VideoMediaStream
 {
-
     /**
      * The <tt>Logger</tt> used by the <tt>VideoMediaStreamImpl</tt> class and
      * its instances for logging output.
@@ -66,19 +66,18 @@ public class VideoMediaStreamImpl
         = Logger.getLogger(VideoMediaStreamImpl.class);
 
     /**
-     * The <tt>RecurringProcessibleExecutor</tt> to be utilized by the
-     * <tt>VideoMediaStreamImpl</tt> class and its instances.
-     */
-    private static final RecurringProcessibleExecutor
-        recurringProcessibleExecutor
-            = new RecurringProcessibleExecutor(
-                    VideoMediaStreamImpl.class.getSimpleName());
-
-    /**
      * The indicator which determines whether RTCP feedback Picture Loss
      * Indication messages are to be used.
      */
     private static final boolean USE_RTCP_FEEDBACK_PLI = true;
+
+    /**
+     * The <tt>RecurringRunnableExecutor</tt> to be utilized by the
+     * <tt>MediaStreamImpl</tt> class and its instances.
+     */
+    private static final RecurringRunnableExecutor
+        recurringRunnableExecutor = new RecurringRunnableExecutor(
+        VideoMediaStreamImpl.class.getSimpleName());
 
     /**
      * Extracts and returns maximum resolution can receive from the image
@@ -421,16 +420,46 @@ public class VideoMediaStreamImpl
     private final QualityControlImpl qualityControl = new QualityControlImpl();
 
     /**
+     * The instance that is aware of all of the {@link RTPEncodingDesc} of the
+     * remote endpoint.
+     */
+    private final MediaStreamTrackReceiver mediaStreamTrackReceiver
+        = new VideoMediaStreamTrackReceiver(this);
+
+    /**
+     * The transformer which handles outgoing rtx (RFC-4588) packets for this
+     * {@link VideoMediaStreamImpl}.
+     */
+    private final RtxTransformer rtxTransformer = new RtxTransformer(this);
+
+    /**
+     * The transformer which handles incoming and outgoing fec
+     */
+    private TransformEngineWrapper<FECTransformEngine> fecTransformEngineWrapper =
+        new TransformEngineWrapper<>();
+
+    /**
+     * The instance that terminates RRs and REMBs.
+     */
+    private final RTCPReceiverFeedbackTermination rtcpFeedbackTermination
+        = new RTCPReceiverFeedbackTermination(this);
+
+    /**
+     *
+     */
+    private final PaddingTermination paddingTermination = new PaddingTermination();
+
+    /**
      * The <tt>RemoteBitrateEstimator</tt> which computes bitrate estimates for
      * the incoming RTP streams.
      */
-    private final RemoteBitrateEstimator remoteBitrateEstimator
-        = new RemoteBitrateEstimatorSingleStream(
+    private final RemoteBitrateEstimatorWrapper remoteBitrateEstimator
+        = new RemoteBitrateEstimatorWrapper(
                 new RemoteBitrateObserver()
                 {
                     @Override
                     public void onReceiveBitrateChanged(
-                            Collection<Integer> ssrcs,
+                            Collection<Long> ssrcs,
                             long bitrate)
                     {
                         VideoMediaStreamImpl.this
@@ -438,7 +467,7 @@ public class VideoMediaStreamImpl
                                     ssrcs,
                                     bitrate);
                     }
-                });
+                }, getDiagnosticContext());
 
     /**
      * The facility which aids this instance in managing a list of
@@ -457,10 +486,26 @@ public class VideoMediaStreamImpl
         = new VideoNotifierSupport(this, true);
 
     /**
-     * The {@code BandwidthEstimator} which estimates the available bandwidth
+     * The {@link BandwidthEstimator} which estimates the available bandwidth
      * from this endpoint to the remote peer.
      */
     private BandwidthEstimatorImpl bandwidthEstimator;
+
+    /**
+     * The {@link CachingTransformer} which caches outgoing/incoming packets
+     * from/to this {@link VideoMediaStreamImpl}.
+     */
+    private CachingTransformer cachingTransformer;
+
+    /**
+     * Whether the remote end supports RTCP FIR.
+     */
+    private boolean supportsFir = false;
+
+    /**
+     * Whether the remote end supports RTCP PLI.
+     */
+    private boolean supportsPli = false;
 
     /**
      * Initializes a new <tt>VideoMediaStreamImpl</tt> instance which will use
@@ -480,18 +525,82 @@ public class VideoMediaStreamImpl
     {
         super(connector, device, srtpControl);
 
-        // Register the RemoteBitrateEstimator with the
-        // RecurringProcessibleExecutor.
-        RemoteBitrateEstimator remoteBitrateEstimator
-            = getRemoteBitrateEstimator();
-
-        if (remoteBitrateEstimator instanceof RecurringProcessible)
-        {
-            recurringProcessibleExecutor.registerRecurringProcessible(
-                    (RecurringProcessible) remoteBitrateEstimator);
-        }
+        recurringRunnableExecutor.registerRecurringRunnable(rtcpFeedbackTermination);
     }
 
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public RtxTransformer getRtxTransformer()
+    {
+        return rtxTransformer;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    protected TransformEngineWrapper<FECTransformEngine> getFecTransformEngine()
+    {
+        return this.fecTransformEngineWrapper;
+    }
+
+    /**
+     * {@inheritDoc}
+     * @param fecTransformEngine
+     */
+    @Override
+    protected void setFecTransformEngine(FECTransformEngine fecTransformEngine)
+    {
+        this.fecTransformEngineWrapper.setWrapped(fecTransformEngine);
+    }
+
+    /**
+     * Sets the value of the flag which indicates whether the remote end
+     * supports RTCP FIR or not.
+     * @param supportsFir the value to set.
+     */
+    public void setSupportsFir(boolean supportsFir)
+    {
+        this.supportsFir = supportsFir;
+    }
+
+    /**
+     * Sets the value of the flag which indicates whether the remote end
+     * supports RTCP PLI or not.
+     * @param supportsPli the value to set.
+     */
+    public void setSupportsPli(boolean supportsPli)
+    {
+        this.supportsPli = supportsPli;
+    }
+
+    /**
+     * Sets the value of the flag which indicates whether the remote end
+     * supports RTCP REMB or not.
+     * @param supportsRemb the value to set.
+     */
+    public void setSupportsRemb(boolean supportsRemb)
+    {
+        remoteBitrateEstimator.setSupportsRemb(supportsRemb);
+    }
+
+    /**
+     * @return {@code true} iff the remote end supports RTCP FIR.
+     */
+    public boolean supportsFir()
+    {
+        return supportsFir;
+    }
+
+    /**
+     * @return {@code true} iff the remote end supports RTCP PLI.
+     */
+    public boolean supportsPli()
+    {
+        return supportsPli;
+    }
     /**
      * Set remote SSRC.
      *
@@ -539,49 +648,18 @@ public class VideoMediaStreamImpl
         }
         finally
         {
-            // Deregister the RemoteBitrateEstimator with the
-            // RecurringProcessibleExecutor.
-            RemoteBitrateEstimator remoteBitrateEstimator
-                = getRemoteBitrateEstimator();
-
-            if (remoteBitrateEstimator instanceof RecurringProcessible)
+            if (cachingTransformer != null)
             {
-                recurringProcessibleExecutor.deRegisterRecurringProcessible(
-                        (RecurringProcessible) remoteBitrateEstimator);
+                recurringRunnableExecutor.deRegisterRecurringRunnable(
+                    cachingTransformer);
             }
-            if (bandwidthEstimator != null)
+
+            if (rtcpFeedbackTermination != null)
             {
-                recurringProcessibleExecutor.deRegisterRecurringProcessible(
-                        bandwidthEstimator);
+                recurringRunnableExecutor
+                    .deRegisterRecurringRunnable(rtcpFeedbackTermination);
             }
         }
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    protected void configureDataInputStream(
-            RTPConnectorInputStream<?> dataInputStream)
-    {
-        super.configureDataInputStream(dataInputStream);
-
-        /*
-         * Start listening to the receipt of data/RTP packets in order to notify
-         * remoteBitrateEstimator.
-         */
-        dataInputStream.addDatagramPacketListener(
-                new DatagramPacketListener()
-                {
-                    @Override
-                    public void update(Object source, DatagramPacket p)
-                    {
-                        VideoMediaStreamImpl.this
-                            .dataInputStreamDatagramPacketListenerUpdate(
-                                    source,
-                                    p);
-                    }
-                });
     }
 
     /**
@@ -650,53 +728,12 @@ public class VideoMediaStreamImpl
     }
 
     /**
-     * Notifies this <tt>VideoMediaStreamImpl</tt> that a
-     * <tt>DatagramPacket</tt> was received by the data/RTP input stream of this
-     * <tt>MediaStreamImpl</tt>.
-     *
-     * @param source the source of the event
-     * @param p the <tt>DatagramPacket</tt> received by the data/RTP input
-     * stream of this <tt>MediaStreamImpl</tt>
+     * {@inheritDoc}
      */
-    private void dataInputStreamDatagramPacketListenerUpdate(
-            Object source,
-            DatagramPacket p)
+    @Override
+    public MediaStreamTrackReceiver getMediaStreamTrackReceiver()
     {
-        RemoteBitrateEstimator remoteBitrateEstimator
-            = getRemoteBitrateEstimator();
-
-        if (remoteBitrateEstimator != null)
-        {
-            // Do the bytes in p resemble (a header of) an RTP packet?
-            byte[] buf = p.getData();
-            int off = p.getOffset();
-            long payloadLenAndOff
-                = RTPTranslatorImpl.getPayloadLengthAndOffsetIfRTP(
-                        buf,
-                        off,
-                        p.getLength());
-
-            if (payloadLenAndOff >= 0)
-            {
-                int payloadLen = (int) (payloadLenAndOff >>> 32);
-                int payloadOff = (int) payloadLenAndOff;
-
-                if (payloadOff >= 0)
-                {
-                    long arrivalTimeMs = System.currentTimeMillis();
-                    long timestamp
-                        = RTPTranslatorImpl.readInt(buf, off + 4) & 0xFFFFFFFFL;
-                    int ssrc = RTPTranslatorImpl.readInt(buf, off + 8);
-
-                    remoteBitrateEstimator.incomingPacket(
-                            arrivalTimeMs,
-                            payloadLen,
-                            ssrc,
-                            timestamp,
-                            /* wasPaced */ false);
-                }
-            }
-        }
+        return mediaStreamTrackReceiver;
     }
 
     /**
@@ -925,7 +962,7 @@ public class VideoMediaStreamImpl
      * {@inheritDoc}
      */
     @Override
-    public RemoteBitrateEstimator getRemoteBitrateEstimator()
+    public RemoteBitrateEstimatorWrapper getRemoteBitrateEstimator()
     {
         return remoteBitrateEstimator;
     }
@@ -1197,7 +1234,7 @@ public class VideoMediaStreamImpl
      * @param bitrate
      */
     private void remoteBitrateEstimatorOnReceiveBitrateChanged(
-            Collection<Integer> ssrcs,
+            Collection<Long> ssrcs,
             long bitrate)
     {
         // TODO Auto-generated method stub
@@ -1312,7 +1349,14 @@ public class VideoMediaStreamImpl
     @Override
     protected CachingTransformer createCachingTransformer()
     {
-        return new CachingTransformer();
+        if (cachingTransformer == null)
+        {
+            cachingTransformer = new CachingTransformer(this);
+            recurringRunnableExecutor.registerRecurringRunnable(
+                cachingTransformer);
+        }
+
+        return cachingTransformer;
     }
 
     /**
@@ -1333,14 +1377,33 @@ public class VideoMediaStreamImpl
      * {@inheritDoc}
      */
     @Override
+    protected TransformEngine getRTCPTermination()
+    {
+        return rtcpFeedbackTermination;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    protected PaddingTermination getPaddingTermination()
+    {
+        return paddingTermination;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
     public BandwidthEstimator getOrCreateBandwidthEstimator()
     {
         if (bandwidthEstimator == null)
         {
             bandwidthEstimator = new BandwidthEstimatorImpl(this);
-            recurringProcessibleExecutor.registerRecurringProcessible(
-                    bandwidthEstimator);
-            logger.info("Creating a BandwidthEstimator for stream " + this);
+            if (logger.isDebugEnabled())
+            {
+                logger.debug(
+                    "Creating a BandwidthEstimator for stream " + this);
+            }
         }
         return bandwidthEstimator;
     }

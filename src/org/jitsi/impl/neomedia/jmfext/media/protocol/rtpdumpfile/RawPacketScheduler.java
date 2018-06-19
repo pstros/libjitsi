@@ -17,6 +17,7 @@
 package org.jitsi.impl.neomedia.jmfext.media.protocol.rtpdumpfile;
 
 import org.jitsi.impl.neomedia.*;
+import org.jitsi.service.neomedia.*;
 import org.jitsi.util.*;
 
 /**
@@ -72,7 +73,7 @@ public class RawPacketScheduler
         long previous = lastRtpTimestamp;
         lastRtpTimestamp = rtpPacket.getTimestamp();
 
-        long rtpDiff = TimeUtils.rtpDiff(lastRtpTimestamp, previous);
+        long rtpDiff = RTPUtils.rtpTimestampDiff(lastRtpTimestamp, previous);
 
         long nanos = (rtpDiff * 1000 * 1000 * 1000) / clockRate;
         if (nanos > 0)

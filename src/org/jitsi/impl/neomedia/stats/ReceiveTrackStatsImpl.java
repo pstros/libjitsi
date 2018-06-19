@@ -88,7 +88,7 @@ public class ReceiveTrackStatsImpl
         }
 
         // Now check for lost packets.
-        int diff = RTPUtils.sequenceNumberDiff(seq, highestSeq);
+        int diff = RTPUtils.getSequenceNumberDelta(seq, highestSeq);
         if (diff <= 0)
         {
             // RFC3550 says that all packets should be counted as received.
@@ -137,5 +137,22 @@ public class ReceiveTrackStatsImpl
     public void rtcpPacketReceived(int length)
     {
         super.packetProcessed(length, System.currentTimeMillis(), false);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * @return the loss rate in the last interval.
+     */
+    @Override
+    public double getLossRate()
+    {
+        // This is not thread safe and the counters might change between the
+        // two function calls below, but the result would be just a wrong
+        // value for the packet loss rate, and likely just off by a little.
+        long lost = getCurrentPacketsLost();
+        long expected = lost + getCurrentPackets();
+
+        return expected == 0 ? 0 : (lost / expected);
     }
 }

@@ -25,7 +25,7 @@ public interface SendTrackStats
     extends TrackStats
 {
     /**
-     * @return an estimate for the recent loss rate.
+     * @return the highest sequence number that was sent out.
      */
-    double getLossRate();
+    int getHighestSent();
 }
