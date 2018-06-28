@@ -23,12 +23,10 @@ import javax.media.rtp.*;
 
 import net.sf.fmj.media.rtp.*;
 import net.sf.fmj.media.rtp.util.*;
-import net.sf.fmj.utility.*;
 
 import org.jitsi.impl.neomedia.*;
 import org.jitsi.impl.neomedia.device.*;
 import org.jitsi.impl.neomedia.rtcp.*;
-import org.jitsi.impl.neomedia.rtp.translator.*;
 import org.jitsi.impl.neomedia.stats.*;
 import org.jitsi.impl.neomedia.transform.*;
 import org.jitsi.service.neomedia.*;
@@ -80,39 +78,16 @@ public class StatisticsEngine
      */
     private static int getLengthIfRTCP(byte[] buf, int off, int len)
     {
-        if ((off >= 0)
-                && (len >= 4)
-                && (buf != null)
-                && (buf.length >= (off + len)))
+        if (off >= 0 && RTCPUtils.isRtcp(buf, off, len))
         {
-            int v = (buf[off] & 0xc0) >>> 6;
+            int bytes = RTCPUtils.getLength(buf, off, len);
 
-            if (v == RTCPHeader.VERSION)
+            if (bytes <= len)
             {
-                int words
-                    = ((buf[off + 2] & 0xff) << 8) | (buf[off + 3] & 0xff);
-                int bytes = (words + 1) * 4;
-
-                if (bytes <= len)
-                    return bytes;
+                return bytes;
             }
         }
         return -1;
-    }
-
-    /**
-     * Determines whether a specific <tt>RawPacket</tt> appears to represent an
-     * RTCP packet.
-     *
-     * @param pkt the <tt>RawPacket</tt> to be examined
-     * @return <tt>true</tt> if the specified <tt>pkt</tt> appears to represent
-     * an RTCP packet
-     */
-    private static boolean isRTCP(RawPacket pkt)
-    {
-        return
-            getLengthIfRTCP(pkt.getBuffer(), pkt.getOffset(), pkt.getLength())
-                > 0;
     }
 
     /**
@@ -229,7 +204,7 @@ public class StatisticsEngine
                             i < sc;
                             ++i, ssrcOff += 4)
                     {
-                        if (RTPTranslatorImpl.readInt(buf, ssrcOff)
+                        if (RTPUtils.readInt(buf, ssrcOff)
                                 == extendedReport.getSSRC())
                         {
                             before = true;
@@ -354,7 +329,7 @@ public class StatisticsEngine
                         break;
                     }
 
-                    int senderSSRC = RTPTranslatorImpl.readInt(buf, off + 4);
+                    int senderSSRC = RTPUtils.readInt(buf, off + 4);
                     // Collect the SSRCs of the RTP data packet sources being
                     // reported upon by the RTCP RR/SR packet because they may
                     // be of concern to the RTCP XR packet (e.g. VoIP Metrics
@@ -364,9 +339,7 @@ public class StatisticsEngine
                     for (int i = 0; i < rc; i++)
                     {
                         sourceSSRCs[i]
-                            = RTPTranslatorImpl.readInt(
-                                    buf,
-                                    receptionReportBlockOff);
+                            = RTPUtils.readInt(buf, receptionReportBlockOff);
                         receptionReportBlockOff += 6 * 4;
                     }
 
@@ -883,7 +856,7 @@ public class StatisticsEngine
     public RawPacket reverseTransform(RawPacket pkt)
     {
         // SRTP may send non-RTCP packets.
-        if (isRTCP(pkt))
+        if (RTCPUtils.isRtcp(pkt.getBuffer(), pkt.getOffset(), pkt.getLength()))
         {
             mediaStreamStats.rtcpPacketReceived(
                 pkt.getRTCPSSRC(), pkt.getLength());
@@ -915,15 +888,14 @@ public class StatisticsEngine
                     || compound.packets.length == 0)
             {
                 logger.info(
-                    "Failed to analyze an incoming RTCP packet for the"
-                        + " purposes of statistics.",
-                    ex);
+                    "Failed to parse an incoming RTCP packet: " +
+                        (ex == null ? "null" : ex.getMessage()));
 
-               // Either this is an empty packet, or parsing failed. In any
-               // case, drop the packet to make sure we're not forwarding
-               // broken RTCP (we've observed Chrome 49 sending SRs with an
-               // incorrect 'rc' field).
-               return null;
+                // Either this is an empty packet, or parsing failed. In any
+                // case, drop the packet to make sure we're not forwarding
+                // broken RTCP (we've observed Chrome 49 sending SRs with an
+                // incorrect 'rc' field).
+                return null;
             }
 
             try
@@ -1027,7 +999,7 @@ public class StatisticsEngine
                 }
                 else if (rtcp instanceof RTCPTCCPacket)
                 {
-                    // TODO: handle for the purpose of BWE.
+                    streamStats.tccPacketReceived((RTCPTCCPacket)rtcp);
                 }
                 break;
 
@@ -1059,7 +1031,7 @@ public class StatisticsEngine
     public RawPacket transform(RawPacket pkt)
     {
         // SRTP may send non-RTCP packets.
-        if (isRTCP(pkt))
+        if (RTCPUtils.isRtcp(pkt.getBuffer(), pkt.getOffset(), pkt.getLength()))
         {
             mediaStreamStats.rtcpPacketSent(pkt.getRTCPSSRC(),
                                             pkt.getLength());

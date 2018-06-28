@@ -177,6 +177,23 @@ public class RawPacket
     /**
      * Test whether the RTP Marker bit is set
      *
+     * @param baf
+     *
+     * @return true if the RTP Marker bit is set, false otherwise.
+     */
+    public static boolean isPacketMarked(ByteArrayBuffer baf)
+    {
+        if (baf == null)
+        {
+            return false;
+        }
+
+        return isPacketMarked(baf.getBuffer(), baf.getOffset(), baf.getLength());
+    }
+
+    /**
+     * Test whether the RTP Marker bit is set
+     *
      * @param buffer
      * @param offset
      * @param length
@@ -686,7 +703,6 @@ public class RawPacket
         return this.buffer;
     }
 
-
     /**
      * Returns the CSRC level at the specified index or <tt>defaultValue</tt>
      * if there was no level at that index.
@@ -1155,7 +1171,7 @@ public class RawPacket
     /**
      * Get RTP payload type from a RTP packet
      *
-     * @return RTP payload type of source RTP packet
+     * @return RTP payload type of source RTP packet, or -1 in case of an error.
      */
     public static int getPayloadType(byte[] buf, int off, int len)
     {
@@ -1165,6 +1181,22 @@ public class RawPacket
         }
 
         return (buf[off + 1] & 0x7F);
+    }
+
+    /**
+     * Get RTP payload type from a RTP packet
+     *
+     * @return RTP payload type of source RTP packet, or -1 in case of an error.
+     */
+    public static int getPayloadType(RawPacket pkt)
+    {
+        if (pkt == null)
+        {
+            return -1;
+        }
+
+        return getPayloadType(
+                pkt.getBuffer(), pkt.getOffset(), pkt.getLength());
     }
 
     /**

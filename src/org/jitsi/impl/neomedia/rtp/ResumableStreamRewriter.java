@@ -141,7 +141,7 @@ public class ResumableStreamRewriter
                 = RTPUtils.subtractNumber(sequenceNumber, seqnumDelta);
 
             // init or update the highest sent sequence number (if needed)
-            if (highestSequenceNumberSent == -1 || RTPUtils.sequenceNumberDiff(
+            if (highestSequenceNumberSent == -1 || RTPUtils.getSequenceNumberDelta(
                 newSequenceNumber, highestSequenceNumberSent) > 0)
             {
                 highestSequenceNumberSent = newSequenceNumber;
@@ -157,7 +157,7 @@ public class ResumableStreamRewriter
                 final int newDelta = RTPUtils.subtractNumber(
                     sequenceNumber, highestSequenceNumberSent);
 
-                if (RTPUtils.sequenceNumberDiff(newDelta, seqnumDelta) > 0)
+                if (RTPUtils.getSequenceNumberDelta(newDelta, seqnumDelta) > 0)
                 {
                     seqnumDelta = newDelta;
                 }
@@ -184,7 +184,7 @@ public class ResumableStreamRewriter
 
             // init or update the highest sent timestamp (if needed)
             if (highestTimestampSent == -1 ||
-                TimeUtils.rtpDiff(newTimestamp, highestTimestampSent) > 0)
+                RTPUtils.rtpTimestampDiff(newTimestamp, highestTimestampSent) > 0)
             {
                 highestTimestampSent = newTimestamp;
             }
@@ -199,7 +199,7 @@ public class ResumableStreamRewriter
                 final long newDelta
                     = (timestamp - highestTimestampSent) & 0xffffffffL;
 
-                if (TimeUtils.rtpDiff(newDelta, timestampDelta) > 0)
+                if (RTPUtils.rtpTimestampDiff(newDelta, timestampDelta) > 0)
                 {
                     timestampDelta = newDelta;
                 }

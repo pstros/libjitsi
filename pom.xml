@@ -57,7 +57,7 @@
       <groupId>${project.groupId}</groupId>
       <artifactId>jitsi-lgpl-dependencies</artifactId>
       <optional>true</optional>
-      <version>1.0-20150723.002855-1</version>
+      <version>1.1-20180413.215034-4</version>
     </dependency>
     <dependency>
       <groupId>${project.groupId}</groupId>
@@ -68,11 +68,51 @@
       <groupId>org.osgi</groupId>
       <artifactId>org.osgi.core</artifactId>
     </dependency>
+    <!-- https://mvnrepository.com/artifact/org.jetbrains/annotations -->
+    <dependency>
+      <groupId>org.jetbrains</groupId>
+      <artifactId>annotations</artifactId>
+      <version>15.0</version>
+    </dependency>
     <!-- test -->
     <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
       <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.easymock</groupId>
+      <artifactId>easymock</artifactId>
+      <version>3.4</version>
+      <scope>test</scope>
+    </dependency>
+        <!-- https://mvnrepository.com/artifact/org.powermock/powermock-core -->
+    <dependency>
+        <groupId>org.powermock</groupId>
+        <artifactId>powermock-core</artifactId>
+        <version>1.7.3</version>
+        <scope>test</scope>
+    </dependency>
+    <!-- https://mvnrepository.com/artifact/org.powermock/powermock-api-easymock -->
+    <dependency>
+        <groupId>org.powermock</groupId>
+        <artifactId>powermock-api-easymock</artifactId>
+        <version>1.7.3</version>
+        <scope>test</scope>
+    </dependency>
+    <!-- https://mvnrepository.com/artifact/org.powermock/powermock-module-junit4 -->
+    <dependency>
+        <groupId>org.powermock</groupId>
+        <artifactId>powermock-module-junit4</artifactId>
+        <version>1.7.3</version>
+        <scope>test</scope>
+    </dependency>
+    <!-- https://mvnrepository.com/artifact/io.pkts/pkts-core -->
+    <dependency>
+        <groupId>io.pkts</groupId>
+        <artifactId>pkts-core</artifactId>
+        <version>3.0.1</version>
+        <scope>test</scope>
     </dependency>
   </dependencies>
 
@@ -84,6 +124,7 @@
          <groupId>org.apache.felix</groupId>
          <artifactId>maven-bundle-plugin</artifactId>
          <configuration>
+            <excludeDependencies>jitsi-lgpl-dependencies</excludeDependencies>
             <instructions>
                <Import-Package>*,sun.lwawt,sun.lwawt.macosx</Import-Package>
                <Export-Package>org.jitsi.util.*,
@@ -150,6 +191,14 @@
             </instructions>
          </configuration>
       </plugin>
+        <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-compiler-plugin</artifactId>
+            <configuration>
+                <source>1.8</source>
+                <target>1.8</target>
+            </configuration>
+        </plugin>
     </plugins>
     <resources>
       <resource>

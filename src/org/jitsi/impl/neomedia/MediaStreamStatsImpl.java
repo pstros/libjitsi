@@ -31,7 +31,6 @@ import net.sf.fmj.media.rtp.*;
 import org.jitsi.impl.neomedia.device.*;
 import org.jitsi.impl.neomedia.rtcp.*;
 import org.jitsi.impl.neomedia.rtp.*;
-import org.jitsi.impl.neomedia.rtp.remotebitrateestimator.*;
 import org.jitsi.impl.neomedia.stats.*;
 import org.jitsi.impl.neomedia.transform.rtcp.*;
 import org.jitsi.service.neomedia.*;
@@ -1228,12 +1227,18 @@ public class MediaStreamStatsImpl
                     RemoteBitrateEstimator remoteBitrateEstimator
                         = mediaStream.getRemoteBitrateEstimator();
 
-                    if (remoteBitrateEstimator instanceof CallStatsObserver)
+                    remoteBitrateEstimator.onRttUpdate(
+                        /* avgRttMs */ rttMs,
+                        /* maxRttMs*/ rttMs);
+
+                    TransportCCEngine tccEngine
+                        = mediaStream.getTransportCCEngine();
+
+                    if (tccEngine != null)
                     {
-                        ((CallStatsObserver) remoteBitrateEstimator)
-                            .onRttUpdate(
-                                    /* avgRttMs */ rttMs,
-                                    /* maxRttMs*/ rttMs);
+                        tccEngine.onRttUpdate(
+                                /* avgRttMs */ rttMs,
+                                /* maxRttMs*/ rttMs);
                     }
                 }
             }
@@ -1640,5 +1645,26 @@ public class MediaStreamStatsImpl
     private MediaStreamStats2Impl getExtended()
     {
         return mediaStreamImpl.getMediaStreamStats();
+    }
+
+    /**
+     * Notifies listeners that a transport-wide-cc packet was received.
+     * Listeners may include Remote Bitrate Estimators or Bandwidth Estimators
+     * {@param tccPacket}
+     */
+
+    public void tccPacketReceived(RTCPTCCPacket tccPacket)
+    {
+        if (tccPacket != null)
+        {
+            synchronized (rtcpPacketListeners)
+            {
+                for (RTCPPacketListener listener : rtcpPacketListeners)
+                {
+
+                    listener.tccReceived(tccPacket);
+                }
+            }
+        }
     }
 }

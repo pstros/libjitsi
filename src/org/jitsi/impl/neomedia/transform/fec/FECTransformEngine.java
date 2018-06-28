@@ -15,6 +15,7 @@
  */
 package org.jitsi.impl.neomedia.transform.fec;
 
+import org.jitsi.impl.neomedia.rtp.*;
 import org.jitsi.impl.neomedia.transform.*;
 import org.jitsi.service.neomedia.*;
 import org.jitsi.util.*;
@@ -26,11 +27,16 @@ import java.util.*;
  * {@link org.jitsi.impl.neomedia.transform.TransformEngine} for RFC5109.
  *
  * @author Boris Grozev
+ * @author bbaldino
  */
 public class FECTransformEngine
         implements TransformEngine,
         PacketTransformer
 {
+    public enum FecType {
+        ULPFEC,
+        FLEXFEC_03
+    }
     /**
      * The <tt>Logger</tt> used by the <tt>FECTransformEngine</tt> class and
      * its instances to print debug information.
@@ -44,7 +50,7 @@ public class FECTransformEngine
     public static final int INITIAL_BUFFER_SIZE = 1500;
 
     /**
-     * The payload type for incoming ulpfec (RFC5109) packets.
+     * The payload type for incoming fec packets.
      *
      * The special value "-1" is used to effectively disable reverse-transforming
      * packets.
@@ -52,7 +58,12 @@ public class FECTransformEngine
     private byte incomingPT = -1;
 
     /**
-     * The payload type for outgoing ulpfec (RFC5109) packets.
+     * The fec type this transform engine will instantiate
+     */
+    protected FecType fecType;
+
+    /**
+     * The payload type for outgoing fec packets.
      *
      * The special value "-1" is used to effectively disable transforming
      * packets.
@@ -69,18 +80,20 @@ public class FECTransformEngine
     private int fecRate = 0;
 
     /**
-     * Maps an SSRC to a <tt>FECReceiver</tt> to be used for packets
+     * Maps an SSRC to a <tt>AbstractFECReceiver</tt> to be used for packets
      * with that SSRC.
      */
-    private final Map<Long,FECReceiver> fecReceivers
-            = new HashMap<Long,FECReceiver>();
+    private final Map<Long, AbstractFECReceiver> fecReceivers
+            = new HashMap<Long, AbstractFECReceiver>();
 
     /**
      * Maps an SSRC to a <tt>FECSender</tt> to be used for packets with that
      * SSRC.
      */
-    private final Map<Long,FECSender> fecSenders
+    private final Map<Long, FECSender> fecSenders
             = new HashMap<Long,FECSender>();
+
+    private final MediaStream mediaStream;
 
     /**
      * Initializes a new <tt>FECTransformEngine</tt> instance.
@@ -88,25 +101,44 @@ public class FECTransformEngine
      * @param incomingPT the RTP payload type number for incoming ulpfec packet.
      * @param outgoingPT the RTP payload type number for outgoing ulpfec packet.
      */
-    public FECTransformEngine(byte incomingPT, byte outgoingPT)
+    public FECTransformEngine(FecType fecType, byte incomingPT,
+                              byte outgoingPT, MediaStream mediaStream)
     {
+        this.fecType = fecType;
+        this.mediaStream = mediaStream;
         setIncomingPT(incomingPT);
         setOutgoingPT(outgoingPT);
     }
 
-    /**
-     * Initializes a new <tt>FECTransformEngine</tt> instance.
-     */
-    public FECTransformEngine()
+    private long getPrimarySsrc(Long ssrc)
     {
-        this((byte) -1, (byte) -1);
+        if (ssrc == null)
+        {
+            return -1;
+        }
+
+        MediaStreamTrackReceiver receiver
+            = mediaStream.getMediaStreamTrackReceiver();
+
+        if (receiver == null)
+        {
+            return -1;
+        }
+
+        RTPEncodingDesc encoding = receiver.findRTPEncodingDesc(ssrc);
+        if (encoding == null)
+        {
+            return -1;
+        }
+
+        return encoding.getPrimarySSRC();
     }
 
     /**
      * {@inheritDoc}
      *
      * Assumes that all packets in <tt>pkts</tt> have the same SSRC. Reverse-
-     * transforms using the <tt>FECReceiver</tt> for the SSRC found in
+     * transforms using the <tt>AbstractFECReceiver</tt> for the SSRC found in
      * <tt>pkts</tt>.
      */
     @Override
@@ -117,21 +149,36 @@ public class FECTransformEngine
 
         // Assumption: all packets in pkts have the same SSRC
         Long ssrc = findSSRC(pkts);
-        if (ssrc == null)
+        long primarySsrc = getPrimarySsrc(ssrc);
+        if (primarySsrc == -1)
+        {
             return pkts;
+        }
 
-        FECReceiver fpt;
+        AbstractFECReceiver fecReceiver;
         synchronized (fecReceivers)
         {
-            fpt = fecReceivers.get(ssrc);
-            if (fpt == null)
+            fecReceiver = fecReceivers.get(primarySsrc);
+            if (fecReceiver == null)
             {
-                fpt = new FECReceiver(ssrc, incomingPT);
-                fecReceivers.put(ssrc, fpt);
+                if (fecType == FecType.ULPFEC)
+                {
+                    fecReceiver = new ULPFECReceiver(primarySsrc, incomingPT);
+                }
+                else if (fecType == FecType.FLEXFEC_03)
+                {
+                    fecReceiver = new FlexFec03Receiver(primarySsrc, incomingPT);
+                }
+                else
+                {
+                    logger.error("Unknown fec type set: " + fecType);
+                    return pkts;
+                }
+                fecReceivers.put(primarySsrc, fecReceiver);
             }
         }
 
-        return fpt.reverseTransform(pkts);
+        return fecReceiver.reverseTransform(pkts);
     }
 
     /**
@@ -170,7 +217,7 @@ public class FECTransformEngine
     @Override
     public void close()
     {
-        Collection<FECReceiver> receivers;
+        Collection<AbstractFECReceiver> receivers;
         Collection<FECSender> senders;
 
         synchronized (fecReceivers)
@@ -184,10 +231,14 @@ public class FECTransformEngine
             fecSenders.clear();
         }
 
-        for (FECReceiver fecReceiver : receivers)
+        for (AbstractFECReceiver fecReceiver : receivers)
+        {
             fecReceiver.close();
+        }
         for (FECSender fecSender : senders)
+        {
             fecSender.close();
+        }
     }
 
     /**
@@ -219,8 +270,8 @@ public class FECTransformEngine
         this.incomingPT = incomingPT;
         synchronized (fecReceivers)
         {
-            for (FECReceiver f : fecReceivers.values())
-                f.setUlpfecPT(incomingPT);
+            for (AbstractFECReceiver f : fecReceivers.values())
+                f.setPayloadType(incomingPT);
         }
         if (logger.isDebugEnabled())
             logger.debug("Setting payload type for incoming ulpfec: "

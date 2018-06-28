@@ -151,6 +151,21 @@ public abstract class AbstractFFmpegAudioCodec
             if (channels == Format.NOT_SPECIFIED)
                 channels = 1;
             FFmpeg.avcodeccontext_set_channels(avctx, channels);
+            if (channels == 1)
+            {
+                //mono
+                FFmpeg.avcodeccontext_set_channel_layout(
+                    avctx,
+                    FFmpeg.AV_CH_LAYOUT_MONO);
+            }
+            else if (channels == 2)
+            {
+                //stereo
+                FFmpeg.avcodeccontext_set_channel_layout(
+                    avctx,
+                    FFmpeg.AV_CH_LAYOUT_STEREO);
+            }
+
             if (sampleRate != Format.NOT_SPECIFIED)
                 FFmpeg.avcodeccontext_set_sample_rate(avctx, sampleRate);
 

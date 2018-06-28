@@ -22,7 +22,6 @@ import javax.media.format.*;
 import javax.sdp.*;
 
 import org.jitsi.impl.neomedia.codec.*;
-import org.jitsi.impl.neomedia.codec.video.h264.*;
 import org.jitsi.impl.neomedia.device.*;
 import org.jitsi.impl.neomedia.format.*;
 import org.jitsi.service.configuration.*;
@@ -43,6 +42,12 @@ import org.jitsi.util.*;
  */
 public class MediaUtils
 {
+    /**
+     * The <tt>Logger</tt> used by the <tt>MediaUtils</tt> class
+     * for logging output.
+     */
+    private static final Logger logger = Logger.getLogger(MediaUtils.class);
+
     /**
      * An empty array with <tt>MediaFormat</tt> element type. Explicitly defined
      * in order to reduce unnecessary allocations, garbage collection.
@@ -181,6 +186,11 @@ public class MediaUtils
             Constants.ULPFEC,
             MediaType.VIDEO,
             Constants.ULPFEC);
+        addMediaFormats(
+            MediaFormat.RTP_PAYLOAD_TYPE_UNKNOWN,
+            Constants.FLEXFEC_03,
+            MediaType.VIDEO,
+            Constants.FLEXFEC_03);
 
         ConfigurationService cfg = LibJitsi.getConfigurationService();
 
@@ -256,80 +266,100 @@ public class MediaUtils
          */
 
         /* H264 */
-        Map<String, String> h264FormatParams = new HashMap<>();
-        String packetizationMode
-            = VideoMediaFormatImpl.H264_PACKETIZATION_MODE_FMTP;
-        Map<String, String> h264AdvancedAttributes = new HashMap<>();
-
-        /*
-         * Disable PLI because the periodic intra-refresh feature of FFmpeg/x264
-         * is used.
-         */
-        // h264AdvancedAttributes.put("rtcp-fb", "nack pli");
-
-        /*
-         * XXX The initialization of MediaServiceImpl is very complex so it is
-         * wise to not reference it at the early stage of its initialization.
-         */
-        ScreenDevice screen = ScreenDeviceImpl.getDefaultScreenDevice();
-        java.awt.Dimension res = (screen == null) ? null : screen.getSize();
-
-        h264AdvancedAttributes.put("imageattr", createImageAttr(null, res));
-
-        if ((cfg == null)
-                || cfg
-                    .getString(
-                            "net.java.sip.communicator.impl.neomedia"
-                                + ".codec.video.h264.defaultProfile",
-                            JNIEncoder.MAIN_PROFILE)
-                        .equals(JNIEncoder.MAIN_PROFILE))
+        // Checks whether ffmpeg is enabled and whether h264 is available in
+        // the provided binaries
+        boolean enableFfmpeg
+            = cfg.getBoolean(MediaService.ENABLE_FFMPEG_CODECS_PNAME, false);
+        boolean h264Enabled = false;
+        if (enableFfmpeg)
         {
-            // main profile, common features, HD capable level 3.1
-            h264FormatParams.put("profile-level-id", "4DE01f");
+            try
+            {
+                h264Enabled
+                    = FFmpeg.avcodec_find_encoder(FFmpeg.CODEC_ID_H264) != 0;
+            }
+            catch (Throwable t)
+            {
+                logger.debug("H264 codec not found", t);
+            }
         }
-        else
+        if (h264Enabled)
         {
-            // baseline profile, common features, HD capable level 3.1
-            h264FormatParams.put("profile-level-id", "42E01f");
-        }
+            Map<String, String> h264FormatParams = new HashMap<>();
+            String packetizationMode
+                = VideoMediaFormatImpl.H264_PACKETIZATION_MODE_FMTP;
+            Map<String, String> h264AdvancedAttributes = new HashMap<>();
 
-        // By default, packetization-mode=1 is enabled.
-        if ((cfg == null)
+            /*
+             * Disable PLI because the periodic intra-refresh feature of FFmpeg/x264
+             * is used.
+             */
+            // h264AdvancedAttributes.put("rtcp-fb", "nack pli");
+
+            /*
+             * XXX The initialization of MediaServiceImpl is very complex so it is
+             * wise to not reference it at the early stage of its initialization.
+             */
+            ScreenDevice screen = ScreenDeviceImpl.getDefaultScreenDevice();
+            java.awt.Dimension res = (screen == null) ? null : screen.getSize();
+
+            h264AdvancedAttributes.put("imageattr", createImageAttr(null, res));
+
+            /*if ((cfg == null)
+                    || cfg
+                        .getString(
+                                "net.java.sip.communicator.impl.neomedia"
+                                    + ".codec.video.h264.defaultProfile",
+                                JNIEncoder.MAIN_PROFILE)
+                            .equals(JNIEncoder.MAIN_PROFILE))
+            {
+                // main profile, common features, HD capable level 3.1
+                h264FormatParams.put("profile-level-id", "4DE01f");
+            }
+            else*/
+            {
+                // baseline profile, common features, HD capable level 3.1
+                h264FormatParams.put("profile-level-id", "42E01f");
+            }
+
+            // By default, packetization-mode=1 is enabled.
+            if ((cfg == null)
                 || cfg.getBoolean(
-                        "net.java.sip.communicator.impl.neomedia"
-                            + ".codec.video.h264.packetization-mode-1.enabled",
-                        true))
-        {
-            // packetization-mode=1
-            h264FormatParams.put(packetizationMode, "1");
-            addMediaFormats(
+                "net.java.sip.communicator.impl.neomedia"
+                    + ".codec.video.h264.packetization-mode-1.enabled",
+                true))
+            {
+                // packetization-mode=1
+                h264FormatParams.put(packetizationMode, "1");
+                addMediaFormats(
                     MediaFormat.RTP_PAYLOAD_TYPE_UNKNOWN,
-                    "H264",
+                    Constants.H264,
                     MediaType.VIDEO,
                     Constants.H264_RTP,
                     h264FormatParams,
                     h264AdvancedAttributes);
-        }
-        // packetization-mode=0
-        /*
-         * XXX At the time of this writing,
-         * EncodingConfiguration#compareEncodingPreferences(MediaFormat,
-         * MediaFormat) is incomplete and considers two MediaFormats to be
-         * equal if they have an equal number of format parameters (given
-         * that the encodings and clock rates are equal, of course). Either
-         * fix the method in question or don't add a format parameter for
-         * packetization-mode 0 (which is equivalent to having
-         * packetization-mode explicitly defined as 0 anyway, according to
-         * the respective RFC).
-         */
-        h264FormatParams.remove(packetizationMode);
-        addMediaFormats(
+            }
+            // packetization-mode=0
+            /*
+             * XXX At the time of this writing,
+             * EncodingConfiguration#compareEncodingPreferences(MediaFormat,
+             * MediaFormat) is incomplete and considers two MediaFormats to be
+             * equal if they have an equal number of format parameters (given
+             * that the encodings and clock rates are equal, of course). Either
+             * fix the method in question or don't add a format parameter for
+             * packetization-mode 0 (which is equivalent to having
+             * packetization-mode explicitly defined as 0 anyway, according to
+             * the respective RFC).
+             */
+            h264FormatParams.remove(packetizationMode);
+            addMediaFormats(
                 MediaFormat.RTP_PAYLOAD_TYPE_UNKNOWN,
-                "H264",
+                Constants.H264,
                 MediaType.VIDEO,
                 Constants.H264_RTP,
                 h264FormatParams,
                 h264AdvancedAttributes);
+        }
 
         /* H263+
         Map<String, String> h263FormatParams
@@ -905,7 +935,7 @@ public class MediaUtils
         for (Map.Entry<String, String> jmfEncodingToEncoding
                 : jmfEncodingToEncodings.entrySet())
         {
-            if (jmfEncodingToEncoding.getValue().equals(encoding))
+            if (jmfEncodingToEncoding.getValue().equalsIgnoreCase(encoding))
             {
                 jmfEncoding = jmfEncodingToEncoding.getKey();
                 break;

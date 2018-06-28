@@ -16,6 +16,7 @@
 package org.jitsi.impl.neomedia.codec;
 
 import java.util.*;
+
 import org.jitsi.util.*;
 import org.jitsi.util.function.*;
 
@@ -142,24 +143,18 @@ public class REDBlockIterator
         }
         else
         {
-            if (buffer == null || offset < 0 || length < 0
+            // we need at least one byte to read the RED block payload type.
+            if (buffer == null || offset < 0 || length < 1
                     || buffer.length < offset + length)
             {
-                logger.warn("Prevented an array out of bounds exception: " +
-                        "buffer length: " + buffer.length + ", offset: "
-                        + offset + ", len: " + length);
+                logger.warn("Prevented an array out of bounds exception."
+                    + " offset: " + offset + ", length: " + length);
                 return null;
             }
 
             byte blockPT = (byte) (buffer[offset] & 0x7f);
             int blockOff = offset + 1; // + 1 for the primary block header.
-            int blockLen = length - blockOff;
-
-            if (buffer.length < blockOff + blockLen)
-            {
-                logger.warn("Primary block doesn't fit in RED packet.");
-                return null;
-            }
+            int blockLen = length - 1;
 
             return new REDBlock(buffer, blockOff, blockLen, blockPT);
         }

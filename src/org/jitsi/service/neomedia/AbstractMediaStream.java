@@ -18,6 +18,7 @@ package org.jitsi.service.neomedia;
 import java.beans.*;
 import java.util.*;
 
+import org.jitsi.impl.neomedia.codec.*;
 import org.jitsi.impl.neomedia.rtp.*;
 import org.jitsi.impl.neomedia.transform.*;
 import org.jitsi.service.neomedia.format.*;
@@ -275,5 +276,23 @@ public abstract class AbstractMediaStream
     @Override
     public void setTransportCCEngine(TransportCCEngine engine)
     {
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public REDBlock getPrimaryREDBlock(ByteArrayBuffer baf)
+    {
+        return null;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public REDBlock getPrimaryREDBlock(RawPacket pkt)
+    {
+        return null;
     }
 }

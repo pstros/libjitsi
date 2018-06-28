@@ -19,6 +19,7 @@ import java.beans.*;
 import java.net.*;
 import java.util.*;
 
+import org.jitsi.impl.neomedia.codec.*;
 import org.jitsi.impl.neomedia.rtp.*;
 import org.jitsi.impl.neomedia.transform.*;
 import org.jitsi.service.neomedia.device.*;
@@ -110,6 +111,11 @@ public interface MediaStream
      * <tt>extensionID</tt>.
      */
     void addRTPExtension(byte extensionID, RTPExtension rtpExtension);
+
+    /**
+     * Clears the RTP header extension associations stored in this instance.
+     */
+    void clearRTPExtensions();
 
     /**
      * Releases the resources allocated by this instance in the course of its
@@ -525,6 +531,31 @@ public interface MediaStream
      * @param pkt the packet.
      */
     boolean isKeyFrame(RawPacket pkt);
+
+    /**
+     * Gets the primary {@link REDBlock} that contains the payload of the RTP
+     * packet passed in as a parameter.
+     *
+     * @param baf the {@link ByteArrayBuffer} that holds the RTP payload.
+     *
+     * @return the primary {@link REDBlock} that contains the payload of the RTP
+     * packet passed in as a parameter, or null if the buffer is invalid.
+     * @Deprecated use getPrimaryREDBlock(RawPacket)
+     */
+    @Deprecated
+    REDBlock getPrimaryREDBlock(ByteArrayBuffer baf);
+
+    /**
+     * Gets the primary {@link REDBlock} that contains the payload of the RTP
+     * packet passed in as a parameter.
+     *
+     * @param pkt the {@link RawPacket} that holds the RTP payload.
+     *
+     * @return the primary {@link REDBlock} that contains the payload of the RTP
+     * packet passed in as a parameter, or null if the buffer is invalid.
+     * @Deprecated use getPrimaryREDBlock(RawPacket)
+     */
+    REDBlock getPrimaryREDBlock(RawPacket pkt);
 
     /**
      * @return the {@link RetransmissionRequester} for this media stream.
