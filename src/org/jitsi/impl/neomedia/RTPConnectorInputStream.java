@@ -39,8 +39,8 @@ import org.jitsi.util.*;
  * @author Lyubomir Marinov
  * @author Boris Grozev
  */
-public abstract class RTPConnectorInputStream<T>
-    implements PushSourceStream
+public abstract class RTPConnectorInputStream<T extends Closeable>
+    implements PushSourceStream, Closeable
 {
     /**
      * The value of the property <tt>controls</tt> of
@@ -349,32 +349,22 @@ public abstract class RTPConnectorInputStream<T>
     /**
      * Close this stream, stops the worker thread.
      */
+    @Override
     public synchronized void close()
     {
         closed = true;
-        if(socket != null)
+        if (socket != null)
         {
-            /*
-             * The classes DatagramSocket and Socket implement the interface
-             * Closeable since Java Runtime Environment 7.
-             */
             try
             {
                 if (socket instanceof Closeable)
                 {
-                    ((Closeable) socket).close();
-                }
-                else if (socket instanceof DatagramSocket)
-                {
-                    ((DatagramSocket) socket).close();
-                }
-                else if (socket instanceof Socket)
-                {
-                    ((Socket) socket).close();
+                    socket.close();
                 }
             }
             catch (IOException ex)
             {
+                // ignore
             }
         }
     }
@@ -557,14 +547,8 @@ public abstract class RTPConnectorInputStream<T>
             if ((socket != null) && !closed && (transferHandler != null))
             {
                 receiveThread
-                    = new Thread()
-                    {
-                        @Override
-                        public void run()
-                        {
-                            RTPConnectorInputStream.this.runInReceiveThread();
-                        }
-                    };
+                    = new Thread(
+                        RTPConnectorInputStream.this::runInReceiveThread);
                 receiveThread.setDaemon(true);
                 receiveThread.setName(
                         RTPConnectorInputStream.class.getName()
@@ -750,6 +734,17 @@ public abstract class RTPConnectorInputStream<T>
             try
             {
                 receive(p);
+            }
+            catch (SocketTimeoutException ste)
+            {
+                // We need to handle these, because some of our implementations
+                // of DatagramSocket#receive are unable to throw a SocketClosed
+                // exception.
+                if (logger.isDebugEnabled())
+                {
+                    logger.debug("Socket timeout, closed=" + closed);
+                }
+                continue;
             }
             catch (IOException e)
             {

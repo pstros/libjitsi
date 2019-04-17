@@ -17,7 +17,8 @@ package org.jitsi.impl.neomedia;
 
 import org.jitsi.service.neomedia.*;
 import org.jitsi.util.*;
-import org.jitsi.util.function.*;
+
+import java.util.function.*;
 
 /**
  * @author George Politis
@@ -25,14 +26,7 @@ import org.jitsi.util.function.*;
 public class AbstractRTPPacketPredicate
     implements Predicate<ByteArrayBuffer>
 {
-    /**
-     * The <tt>Logger</tt> used by the <tt>AbstractRTPPacketPredicate</tt>
-     * class.
-     */
-    private static final Logger logger
-        = Logger.getLogger(AbstractRTPPacketPredicate.class);
-
-    /**
+   /**
      * True if this predicate should test for RTCP, false for RTP.
      */
     private final boolean rtcp;
@@ -53,9 +47,8 @@ public class AbstractRTPPacketPredicate
     @Override
     public boolean test(ByteArrayBuffer pkt)
     {
-        // If isHeaderValid fails, this is not a valid RTP packet either.
         if (pkt == null
-                || !RTCPUtils.isHeaderValid(
+                || !RawPacket.isRtpRtcp(
                     pkt.getBuffer(), pkt.getOffset(), pkt.getLength()))
         {
             return false;

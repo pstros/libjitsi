@@ -608,7 +608,7 @@ public class MediaStreamImpl
             {
                 MediaDeviceSession deviceSession = getDeviceSession();
 
-                if (deviceSession == null)
+                if (deviceSession == null || rtpTranslator != null)
                 {
                     // Since there is no output MediaDevice to render the
                     // receiveStream on, the JitterBuffer of the receiveStream
@@ -3727,11 +3727,12 @@ public class MediaStreamImpl
     {
         try
         {
-            if (pkt == null)
+            if (pkt == null || pkt.getBuffer() == null)
             {
                 // It's a waste of time to invoke the method with a null pkt so
                 // disallow it.
-                throw new NullPointerException("pkt");
+                throw new NullPointerException(
+                    pkt == null ? "pkt" : "pkt.getBuffer()");
             }
 
             AbstractRTPConnector rtpConnector = getRTPConnector();
@@ -4048,6 +4049,7 @@ public class MediaStreamImpl
      */
     public boolean isKeyFrame(RawPacket pkt)
     {
+        // XXX merge with GenericAdaptiveTrackProjectionContext.isKeyframe().
         if (!RTPPacketPredicate.INSTANCE.test(pkt))
         {
             return false;
@@ -4247,6 +4249,20 @@ public class MediaStreamImpl
         if (transportCCEngine != null)
         {
             transportCCEngine.addMediaStream(this);
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void setRTPTranslator(RTPTranslator rtpTranslator)
+    {
+        super.setRTPTranslator(rtpTranslator);
+
+        if (this.deviceSession != null)
+        {
+            this.deviceSession.setUseTranslator(rtpTranslator != null);
         }
     }
 }

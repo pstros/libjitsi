@@ -20,6 +20,7 @@ package org.jitsi.util.concurrent;
  * {@link RecurringRunnable#run()} invoked at a specific interval/period.
  *
  * @author Lyubomir Marinov
+ * @author Boris Grozev
  */
 public abstract class PeriodicRunnable
     implements RecurringRunnable
@@ -27,13 +28,13 @@ public abstract class PeriodicRunnable
     /**
      * The last time in milliseconds at which {@link #run} was invoked.
      */
-    private long _lastProcessTime = System.currentTimeMillis();
+    private long _lastProcessTime;
 
     /**
      * The interval/period in milliseconds at which {@link #run} is to be
      * invoked.
      */
-    private final long _period;
+    private long _period;
 
     /**
      * Initializes a new {@code PeriodicRunnable} instance which is to have
@@ -44,10 +45,25 @@ public abstract class PeriodicRunnable
      */
     public PeriodicRunnable(long period)
     {
+        this(period, false);
+    }
+
+    /**
+     * Initializes a new {@code PeriodicRunnable} instance which is to have
+     * its {@link #run()} invoked at a specific interval/period.
+     *
+     * @param period the interval/period in milliseconds at which
+     * {@link #run()} is to be invoked
+     * @param invokeImmediately whether to invoke the runnable immediately or
+     * wait for one {@code period} before the first invocation.
+     */
+    public PeriodicRunnable(long period, boolean invokeImmediately)
+    {
         if (period < 1)
             throw new IllegalArgumentException("period " + period);
 
         _period = period;
+        _lastProcessTime = invokeImmediately ? -1 : System.currentTimeMillis();
     }
 
     /**
@@ -71,6 +87,16 @@ public abstract class PeriodicRunnable
     public final long getPeriod()
     {
         return _period;
+    }
+
+    /**
+     * Sets the period in milliseconds at which {@link #run} is to be invoked.
+     * Note that the change may not take effect immediately.
+     * @param period the period to set.
+     */
+    public void setPeriod(long period)
+    {
+        _period = period;
     }
 
     /**
